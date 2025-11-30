@@ -1865,6 +1865,8 @@ FilterBitsBuilder* RibbonFilterPolicy::GetBuilderWithContext(
         break;
       }
       case kCompactionStyleFIFO:
+      // for levelhash
+      case kCompactionStyleHash:
       case kCompactionStyleNone:
         // Treat as bottommost
         assert(levelish == INT_MAX - 1);

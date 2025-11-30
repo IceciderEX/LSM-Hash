@@ -848,6 +848,11 @@ set(SOURCES
         table/block_based/filter_block_reader_common.cc
         table/block_based/filter_policy.cc
         table/block_based/flush_block_policy.cc
+        # for levelhash
+        table/level_hash/level_hash_table.cc           
+        memtable/level_hash_iterator.cc        
+        memtable/level_hash_memtable.cc                
+        db/compaction/compaction_picker_level_hash.cc  
         table/block_based/full_filter_block.cc
         table/block_based/hash_index_reader.cc
         table/block_based/index_builder.cc
@@ -1693,3 +1698,6 @@ option(WITH_BENCHMARK "build benchmark tests" OFF)
 if(WITH_BENCHMARK)
   add_subdirectory(${PROJECT_SOURCE_DIR}/microbench/)
 endif()
+
+add_executable(level_hash_test test/hash_test.cc)
+target_link_libraries(level_hash_test rocksdb ${THIRDPARTY_LIBS} ${SYSTEM_LIBS})

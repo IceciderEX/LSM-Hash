@@ -40,6 +40,7 @@
 #include "util/autovector.h"
 #include "util/cast_util.h"
 #include "util/compression.h"
+#include "db/compaction/compaction_picker_level_hash.h"
 
 namespace ROCKSDB_NAMESPACE {
 
@@ -668,6 +669,10 @@ ColumnFamilyData::ColumnFamilyData(
     } else if (ioptions_.compaction_style == kCompactionStyleUniversal) {
       compaction_picker_.reset(
           new UniversalCompactionPicker(ioptions_, &internal_comparator_));
+    // for levelhash
+    } else if (ioptions_.compaction_style == kCompactionStyleHash) {
+      compaction_picker_.reset(
+          new LevelHashCompactionPicker(ioptions_, &internal_comparator_));
     } else if (ioptions_.compaction_style == kCompactionStyleFIFO) {
       compaction_picker_.reset(
           new FIFOCompactionPicker(ioptions_, &internal_comparator_));

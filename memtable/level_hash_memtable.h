@@ -66,6 +66,14 @@ class LevelHashMemTableFactory : public MemTableRepFactory {
                                     size_t write_buffer_size_in_entries = 100000)
       : initial_g_(initial_g),
         write_buffer_size_in_entries_(write_buffer_size_in_entries) {}
+  
+  MemTableRep* CreateMemTableRep(const MemTableRep::KeyComparator& comparator,
+                                 Allocator* allocator,
+                                 const SliceTransform* /*prefix_extractor*/,
+                                 Logger* /*logger*/, uint32_t /* column_family_id*/) override {
+    return new LevelHashMemTable(comparator, allocator, initial_g_,
+                                 write_buffer_size_in_entries_);
+  }
 
   MemTableRep* CreateMemTableRep(const MemTableRep::KeyComparator& comparator,
                                  Allocator* allocator,

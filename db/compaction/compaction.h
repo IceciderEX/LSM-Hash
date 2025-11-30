@@ -486,6 +486,19 @@ class Compaction {
   // mark (or clear) all files that are being compacted
   void MarkFilesBeingCompacted(bool being_compacted) const;
 
+  // for levelhash
+  static const uint32_t kInvalidBucketId = 0xFFFFFFFF;
+
+  void SetTargetBucketId(uint32_t bucket_id) {
+    target_bucket_id_ = bucket_id;
+  }
+  uint32_t GetTargetBucketId() const {
+    return target_bucket_id_;
+  }
+  bool HasTargetBucket() const {
+    return target_bucket_id_ != kInvalidBucketId;
+  }
+
  private:
   Status InitInputTableProperties();
 
@@ -645,6 +658,9 @@ class Compaction {
   InternalKey proximal_level_largest_;
   ProximalOutputRangeType proximal_output_range_type_ =
       ProximalOutputRangeType::kNotSupported;
+
+  // for levelhash
+  uint32_t target_bucket_id_ = kInvalidBucketId;
 };
 
 #ifndef NDEBUG

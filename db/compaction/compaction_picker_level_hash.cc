@@ -89,10 +89,7 @@ Compaction* LevelHashCompactionPicker::PickCompaction(
       CompactionReason::kLevelL0FilesNum // Reason
   );
   
-  // **关键**：我们需要传递 Target Bucket ID 给 CompactionJob，以便它能过滤数据。
-  // 我们可以利用 `Compaction::job_id` 或者新增一个字段。
-  // 或者，我们实现一个自定义的 `CompactionFilter`。
-  
+  c->SetTargetBucketId(target_bucket);
   return c;
 }
 

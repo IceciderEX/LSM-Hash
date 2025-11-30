@@ -13,14 +13,15 @@ namespace ROCKSDB_NAMESPACE {
 static constexpr uint64_t kLevelHashMagicNumber = 0x6C6254687361484Cull;
 static constexpr size_t kFooterSize = 20; // 8 (IndexOffset) + 4 (G) + 8 (Magic)
 
+
 //=== LevelHashTableBuilder ===
 
 LevelHashTableBuilder::LevelHashTableBuilder(
     const TableBuilderOptions& tb_options, WritableFileWriter* file, uint32_t initial_g)
     : tb_options_(tb_options),
       file_(file),
-      num_entries_(0),
-      io_status_(IOStatus::OK()) {
+      io_status_(IOStatus::OK()),
+      num_entries_(0) {
   const auto& context = static_cast<const TablePropertiesCollectorFactory::Context&>(tb_options);
   int current_level = (context.level_at_creation == TablePropertiesCollectorFactory::Context::kUnknownLevelAtCreation) 
                       ? 0 
@@ -351,13 +352,6 @@ Status LevelHashTableReader::Get(const ReadOptions& /*read_options*/,
 
 // --- 实现纯虚函数 ---
 
-InternalIterator* LevelHashTableReader::NewIterator(
-    const ReadOptions& /*read_options*/, const SliceTransform* /*prefix_extractor*/,
-    Arena* /*arena*/, bool /*skip_filters*/, TableReaderCaller /*caller*/,
-    size_t /*compaction_readahead_size*/, bool /*allow_unprepared_value*/) {
-  return nullptr; 
-}
-
 uint64_t LevelHashTableReader::ApproximateOffsetOf(const ReadOptions& /*read_options*/,
                                                    const Slice& key,
                                                    TableReaderCaller /*caller*/) {
@@ -380,6 +374,19 @@ size_t LevelHashTableReader::ApproximateMemoryUsage() const {
   return bucket_offsets_.capacity() * sizeof(uint64_t);
 }
 
+InternalIterator* LevelHashTableReader::NewIterator(
+    const ReadOptions& /*read_options*/, const SliceTransform* /*prefix_extractor*/,
+    Arena* arena, bool /*skip_filters*/, TableReaderCaller /*caller*/,
+    size_t /*compaction_readahead_size*/, bool /*allow_unprepared_value*/) {
+  
+  if (arena) {
+    void* mem = arena->AllocateAligned(sizeof(LevelHashTableIterator));
+    return new (mem) LevelHashTableIterator(file_.get(), bucket_offsets_, index_offset_, num_buckets_);
+  } else {
+    return new LevelHashTableIterator(file_.get(), bucket_offsets_, index_offset_, num_buckets_);
+  }
+}
+
 //=== LevelHashTableFactory ===
 
 TableBuilder* LevelHashTableFactory::NewTableBuilder(
@@ -389,10 +396,24 @@ TableBuilder* LevelHashTableFactory::NewTableBuilder(
 }
 
 Status LevelHashTableFactory::NewTableReader(
+      const TableReaderOptions& table_reader_options,
+      std::unique_ptr<RandomAccessFileReader>&& file_reader, 
+      uint64_t file_size,
+      std::unique_ptr<TableReader>* table_reader,
+      bool prefetch) const {
+  // 默认 ReadOptions
+  ReadOptions ro;
+  return NewTableReader(ro, table_reader_options, std::move(file_reader),
+                        file_size, table_reader, prefetch);
+}
+
+Status LevelHashTableFactory::NewTableReader(
+    const ReadOptions& ro,
     const TableReaderOptions& table_reader_options,
     std::unique_ptr<RandomAccessFileReader>&& file, uint64_t file_size,
     std::unique_ptr<TableReader>* table_reader,
     bool /*prefetch_index_and_filter_in_cache*/) const {
+  
   return LevelHashTableReader::Open(table_reader_options, std::move(file),
                                     file_size, table_reader);
 }

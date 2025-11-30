@@ -757,7 +757,7 @@ class VersionEdit {
                const uint64_t compensated_range_deletion_size,
                uint64_t tail_size, bool user_defined_timestamps_persisted,
                // for levelhash
-               const std::vector<uint64_t>& valid_bucket_bitmap) {
+               const std::vector<uint64_t>& valid_bucket_bitmap = {}) {
     assert(smallest_seqno <= largest_seqno);
     new_files_.emplace_back(
         level,

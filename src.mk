@@ -192,6 +192,10 @@ LIB_SOURCES =                                                   \
   table/block_based/filter_block_reader_common.cc               \
   table/block_based/filter_policy.cc                            \
   table/block_based/flush_block_policy.cc                       \
+  table/level_hash/level_hash_table.cc                          \  
+  memtable/level_hash_iterator.cc                       \
+  memtable/level_hash_memtable.cc                               \
+  db/compaction/compaction_picker_level_hash.cc                 \
   table/block_based/full_filter_block.cc                        \
   table/block_based/hash_index_reader.cc                        \
   table/block_based/index_builder.cc                            \

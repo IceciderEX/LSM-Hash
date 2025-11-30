@@ -353,12 +353,15 @@ void UpdateColumnFamilyOptions(const ImmutableCFOptions& ioptions,
   // * max_file_size
 }
 
+
+// for levelhash
 std::map<CompactionStyle, std::string>
     OptionsHelper::compaction_style_to_string = {
         {kCompactionStyleLevel, "kCompactionStyleLevel"},
         {kCompactionStyleUniversal, "kCompactionStyleUniversal"},
         {kCompactionStyleFIFO, "kCompactionStyleFIFO"},
-        {kCompactionStyleNone, "kCompactionStyleNone"}};
+        {kCompactionStyleNone, "kCompactionStyleNone"},
+        {kCompactionStyleHash, "kCompactionStyleHash"}};
 
 std::map<CompactionPri, std::string> OptionsHelper::compaction_pri_to_string = {
     {kByCompensatedSize, "kByCompensatedSize"},

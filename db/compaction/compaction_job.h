@@ -557,6 +557,9 @@ class CompactionJob {
   void UpdateSubcompactionProgressPerLevel(
       SubcompactionState* sub_compact, bool is_proximal_level,
       SubcompactionProgress& subcompaction_progress);
+
+  // for levelhash
+  Status RunLevelHashCompaction(uint32_t target_bucket_id);
 };
 
 // CompactionServiceInput is used the pass compaction information between two
