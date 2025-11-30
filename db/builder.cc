@@ -40,6 +40,7 @@
 #include "table/block_based/block_based_table_builder.h"
 #include "table/format.h"
 #include "table/internal_iterator.h"
+#include "table/level_hash/level_hash_table.h"
 #include "table/unique_id_impl.h"
 #include "test_util/sync_point.h"
 #include "util/stop_watch.h"
@@ -334,6 +335,16 @@ Status BuildTable(
               ? meta->file_creation_time
               : meta->oldest_ancester_time);
       s = builder->Finish();
+
+      // for levelhash
+      if (s.ok()) {
+        // dynamic_cast
+        auto* level_hash_builder = dynamic_cast<LevelHashTableBuilder*>(builder);
+        if (level_hash_builder) {
+          // 提取位图并保存到 FileMetaData (meta) 中
+          meta->valid_bucket_bitmap = level_hash_builder->GetValidBucketBitmap();
+        }
+      }
     }
     if (io_status->ok()) {
       *io_status = builder->io_status();

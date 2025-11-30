@@ -305,6 +305,16 @@ void VersionEdit::EncodeToNewFile4(const FileMetaData& f, int level,
     char p = static_cast<char>(0);
     PutLengthPrefixedSlice(dst, Slice(&p, 1));
   }
+  // for levelhash
+  if (!f.valid_bucket_bitmap.empty()) {
+    PutVarint32(dst, NewFileCustomTag::kValidBucketBitmap);
+    std::string bytes;
+    // 将 uint64 数组转换为字节流
+    for (uint64_t word : f.valid_bucket_bitmap) {
+      PutFixed64(&bytes, word);
+    }
+    PutLengthPrefixedSlice(dst, Slice(bytes));
+  }
   TEST_SYNC_POINT_CALLBACK("VersionEdit::EncodeTo:NewFile4:CustomizeFields",
                            dst);
 
@@ -444,6 +454,19 @@ const char* VersionEdit::DecodeNewFile4From(Slice* input, int& max_level,
           }
           f.user_defined_timestamps_persisted = (field[0] == 1);
           break;
+        // for levelhash
+        case kValidBucketBitmap: {
+          if (field.size() % 8 != 0) {
+            return "valid_bucket_bitmap field size must be multiple of 8";
+          }
+          const char* p = field.data();
+          const char* limit = p + field.size();
+          while (p < limit) {
+            f.valid_bucket_bitmap.push_back(DecodeFixed64(p));
+            p += 8;
+          }
+          break;
+        }
         default:
           if ((custom_tag & kCustomTagNonSafeIgnoreMask) != 0) {
             // Should not proceed if cannot understand it

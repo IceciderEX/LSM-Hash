@@ -112,6 +112,9 @@ enum NewFileCustomTag : uint32_t {
   kTailSize = 15,
   kUserDefinedTimestampsPersisted = 16,
 
+  // for levelhash
+  kValidBucketBitmap = 20,  
+
   // If this bit for the custom tag is set, opening DB should fail if
   // we don't know this field.
   kCustomTagNonSafeIgnoreMask = 1 << 6,
@@ -276,6 +279,17 @@ struct FileMetaData {
   // false, it's explicitly written to Manifest.
   bool user_defined_timestamps_persisted = true;
 
+  // for levelhash
+  std::vector<uint64_t> valid_bucket_bitmap;
+
+  bool HasBucket(uint32_t bucket_id) const {
+    size_t idx = bucket_id / 64;
+    size_t bit = bucket_id % 64;
+    if (idx >= valid_bucket_bitmap.size()) return false;
+    return (valid_bucket_bitmap[idx] & (1ULL << bit)) != 0;
+  }
+  // -----------------------
+
   FileMetaData() = default;
 
   FileMetaData(uint64_t file, uint32_t file_path_id, uint64_t file_size,
@@ -288,7 +302,9 @@ struct FileMetaData {
                const std::string& _file_checksum_func_name,
                UniqueId64x2 _unique_id,
                const uint64_t _compensated_range_deletion_size,
-               uint64_t _tail_size, bool _user_defined_timestamps_persisted)
+               uint64_t _tail_size, bool _user_defined_timestamps_persisted,
+               // for levelhash
+               const std::vector<uint64_t>& _valid_bucket_bitmap = {})
       : fd(file, file_path_id, file_size, smallest_seq, largest_seq),
         smallest(smallest_key),
         largest(largest_key),
@@ -303,7 +319,9 @@ struct FileMetaData {
         file_checksum_func_name(_file_checksum_func_name),
         unique_id(std::move(_unique_id)),
         tail_size(_tail_size),
-        user_defined_timestamps_persisted(_user_defined_timestamps_persisted) {
+        user_defined_timestamps_persisted(_user_defined_timestamps_persisted),
+        // for levelhash
+        valid_bucket_bitmap(_valid_bucket_bitmap) {
     TEST_SYNC_POINT_CALLBACK("FileMetaData::FileMetaData", this);
   }
 
@@ -737,7 +755,9 @@ class VersionEdit {
                const std::string& file_checksum_func_name,
                const UniqueId64x2& unique_id,
                const uint64_t compensated_range_deletion_size,
-               uint64_t tail_size, bool user_defined_timestamps_persisted) {
+               uint64_t tail_size, bool user_defined_timestamps_persisted,
+               // for levelhash
+               const std::vector<uint64_t>& valid_bucket_bitmap) {
     assert(smallest_seqno <= largest_seqno);
     new_files_.emplace_back(
         level,
@@ -747,7 +767,7 @@ class VersionEdit {
                      file_creation_time, epoch_number, file_checksum,
                      file_checksum_func_name, unique_id,
                      compensated_range_deletion_size, tail_size,
-                     user_defined_timestamps_persisted));
+                     user_defined_timestamps_persisted, valid_bucket_bitmap));
     files_to_quarantine_.push_back(file);
     if (!HasLastSequence() || largest_seqno > GetLastSequence()) {
       SetLastSequence(largest_seqno);

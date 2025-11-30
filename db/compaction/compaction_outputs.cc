@@ -9,7 +9,7 @@
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 
 #include "db/compaction/compaction_outputs.h"
-
+#include "table/level_hash/level_hash_table.h"
 #include "db/builder.h"
 
 namespace ROCKSDB_NAMESPACE {
@@ -34,6 +34,14 @@ Status CompactionOutputs::Finish(
     builder_->SetSeqnoTimeTableProperties(relevant_mapping,
                                           meta->oldest_ancester_time);
     s = builder_->Finish();
+
+    if (s.ok()) {
+      // std::unique_ptr<TableBuilder>
+      auto* level_hash_builder = dynamic_cast<LevelHashTableBuilder*>(builder_.get());
+      if (level_hash_builder) {
+        meta->valid_bucket_bitmap = level_hash_builder->GetValidBucketBitmap();
+      }
+    }
 
   } else {
     builder_->Abandon();
