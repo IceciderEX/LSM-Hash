@@ -13,6 +13,22 @@ namespace ROCKSDB_NAMESPACE {
 static constexpr uint64_t kLevelHashMagicNumber = 0x6C6254687361484Cull;
 static constexpr size_t kFooterSize = 20; // 8 (IndexOffset) + 4 (G) + 8 (Magic)
 
+inline uint64_t ReverseBits64(uint64_t x) {
+  x = ((x & 0x5555555555555555ULL) << 1) | ((x & 0xAAAAAAAAAAAAAAAAULL) >> 1);
+  x = ((x & 0x3333333333333333ULL) << 2) | ((x & 0xCCCCCCCCCCCCCCCCULL) >> 2);
+  x = ((x & 0x0F0F0F0F0F0F0F0FULL) << 4) | ((x & 0xF0F0F0F0F0F0F0F0ULL) >> 4);
+  x = ((x & 0x00FF00FF00FF00FFULL) << 8) | ((x & 0xFF00FF00FF00FF00ULL) >> 8);
+  x = ((x & 0x0000FFFF0000FFFFULL) << 16) | ((x & 0xFFFF0000FFFF0000ULL) >> 16);
+  return (x << 32) | (x >> 32);
+}
+
+inline uint32_t GetBucketIndex(uint64_t hash, uint32_t G) {
+  if (G == 0) return 0;
+  // 1. 翻转所有位
+  uint64_t reversed = ReverseBits64(hash);
+  // 2. 将翻转后的高 G 位移到低位作为索引
+  return static_cast<uint32_t>(reversed >> (64 - G));
+}
 
 //=== LevelHashTableBuilder ===
 
@@ -39,8 +55,8 @@ void LevelHashTableBuilder::Add(const Slice& key, const Slice& value) {
   if (!status_.ok()) return;
 
   Slice user_key = ExtractUserKey(key);
-  uint32_t hash = MurmurHash(user_key.data(), static_cast<int>(user_key.size()), 0);
-  uint32_t bucket_idx = hash & (num_buckets_ - 1);
+  uint64_t hash = MurmurHash64A(user_key.data(), user_key.size(), 0);
+  uint32_t bucket_idx = GetBucketIndex(hash, G_);
 
   try {
     buffer_[bucket_idx].emplace_back(key.ToString(), value.ToString());
@@ -56,10 +72,11 @@ void LevelHashTableBuilder::Add(const Slice& key, const Slice& value) {
   }
 }
 
+// 将 buf 中的数据实际写入到 sst
 Status LevelHashTableBuilder::Finish() {
   if (!status_.ok()) return status_;
 
-  // 
+  // set bitmap
   size_t bitmap_size = (num_buckets_ + 63) / 64;
   valid_bucket_bitmap_.assign(bitmap_size, 0);
 
@@ -82,7 +99,6 @@ Status LevelHashTableBuilder::Finish() {
     std::string bucket_header;
     PutFixed32(&bucket_header, static_cast<uint32_t>(bucket_data.size()));
     
-    // 修复：传入 io_opts
     status_ = file_->Append(io_opts, Slice(bucket_header)); 
     if (!status_.ok()) return status_;
 
@@ -91,7 +107,6 @@ Status LevelHashTableBuilder::Finish() {
       PutLengthPrefixedSlice(&entry_buf, Slice(kv.first));
       PutLengthPrefixedSlice(&entry_buf, Slice(kv.second));
       
-      // 修复：传入 io_opts
       status_ = file_->Append(io_opts, Slice(entry_buf));
       if (!status_.ok()) return status_;
     }
@@ -262,22 +277,7 @@ const char* ReadLengthPrefixedSlice(const char* p, const char* limit, Slice* res
   return p + len;
 }
 
-inline uint64_t ReverseBits64(uint64_t x) {
-  x = ((x & 0x5555555555555555ULL) << 1) | ((x & 0xAAAAAAAAAAAAAAAAULL) >> 1);
-  x = ((x & 0x3333333333333333ULL) << 2) | ((x & 0xCCCCCCCCCCCCCCCCULL) >> 2);
-  x = ((x & 0x0F0F0F0F0F0F0F0FULL) << 4) | ((x & 0xF0F0F0F0F0F0F0F0ULL) >> 4);
-  x = ((x & 0x00FF00FF00FF00FFULL) << 8) | ((x & 0xFF00FF00FF00FF00ULL) >> 8);
-  x = ((x & 0x0000FFFF0000FFFFULL) << 16) | ((x & 0xFFFF0000FFFF0000ULL) >> 16);
-  return (x << 32) | (x >> 32);
-}
 
-inline uint32_t GetBucketIndex(uint64_t hash, uint32_t G) {
-  if (G == 0) return 0;
-  // 1. 翻转所有位
-  uint64_t reversed = ReverseBits64(hash);
-  // 2. 将翻转后的高 G 位移到低位作为索引
-  return static_cast<uint32_t>(reversed >> (64 - G));
-}
 
 Status LevelHashTableReader::Get(const ReadOptions& /*read_options*/,
                                  const Slice& key,
@@ -286,7 +286,6 @@ Status LevelHashTableReader::Get(const ReadOptions& /*read_options*/,
                                  bool /*skip_filters*/) {
   Slice user_key = ExtractUserKey(key);
   uint64_t hash = MurmurHash64A(user_key.data(), user_key.size(), 0);
-
   uint32_t bucket_idx = GetBucketIndex(hash, G_);
 
   uint64_t offset_start = bucket_offsets_[bucket_idx];

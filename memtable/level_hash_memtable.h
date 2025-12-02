@@ -84,6 +84,9 @@ class LevelHashMemTableFactory : public MemTableRepFactory {
   }
 
   const char* Name() const override { return "LevelHashMemTableFactory"; }
+
+  bool IsInsertConcurrentlySupported() const override { return true; }
+  
   uint32_t GetInitialG() const { return initial_g_; }
 
  private:

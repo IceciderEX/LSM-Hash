@@ -31,6 +31,7 @@ LevelHashMemTable::LevelHashMemTable(
 
 LevelHashMemTable::~LevelHashMemTable() {}
 
+// util：翻转所有 64 bit
 inline uint64_t ReverseBits64(uint64_t x) {
   x = ((x & 0x5555555555555555ULL) << 1) | ((x & 0xAAAAAAAAAAAAAAAAULL) >> 1);
   x = ((x & 0x3333333333333333ULL) << 2) | ((x & 0xCCCCCCCCCCCCCCCCULL) >> 2);
@@ -40,6 +41,7 @@ inline uint64_t ReverseBits64(uint64_t x) {
   return (x << 32) | (x >> 32);
 }
 
+// util：提取出高 G 位作为桶索引
 inline uint32_t GetBucketIndex(uint64_t hash, uint32_t G) {
   if (G == 0) return 0;
   // 1. 翻转所有位
@@ -52,13 +54,12 @@ void LevelHashMemTable::Insert(KeyHandle handle) {
   const char* key_ptr = static_cast<const char*>(handle);
   Slice internal_key = GetLengthPrefixedSlice(key_ptr);
   Slice user_key = ExtractUserKey(internal_key);
+  // eg. user_key = "key1", hash = 9539024932675925583
   uint64_t hash = MurmurHash64A(user_key.data(), user_key.size(), 0);
-  
-  // 这里的 num_buckets_ 必须是 2^G
-  // 注意：MemTable 构造时需要保存 G_
+  // eg. 9539024932675925583 -> bucket 7
   uint32_t bucket_idx = GetBucketIndex(hash, G_);
 
-  // 2. 加锁写入
+  // 加锁写入（暂定）
   Bucket* bucket = buckets_[bucket_idx].get();
   {
     std::lock_guard<std::mutex> lock(bucket->mutex_);
@@ -71,8 +72,8 @@ void LevelHashMemTable::Insert(KeyHandle handle) {
 bool LevelHashMemTable::Contains(const char* key) const {
   Slice internal_key = GetLengthPrefixedSlice(key);
   Slice user_key = ExtractUserKey(internal_key);
-  uint32_t hash = MurmurHash(user_key.data(), static_cast<int>(user_key.size()), 0);
-  uint32_t bucket_idx = hash & (num_buckets_ - 1);
+  uint64_t hash = MurmurHash64A(user_key.data(), user_key.size(), 0);
+  uint32_t bucket_idx = GetBucketIndex(hash, G_);
 
   const Bucket* bucket = buckets_[bucket_idx].get();
   // 加锁读取 (防止读取时发生 vector 扩容导致迭代器失效)
@@ -115,7 +116,7 @@ bool LevelHashMemTable::IsFull() const {
 }
 
 MemTableRep::Iterator* LevelHashMemTable::GetIterator(Arena* arena) {
-  // Iterator 注意：MemTableRep Iterator 通常由 FlushJob 在 MemTable 变为 Immutable 后调用，
+  // 通常由 FlushJob 在 MemTable 变为 Immutable 后调用，
   // 此时不再有写入，因此不需要加锁。但如果在并发写入时迭代，该实现是不安全的。
   if (arena == nullptr) {
     return new LevelHashIterator(this);

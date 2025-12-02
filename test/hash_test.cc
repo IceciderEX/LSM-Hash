@@ -17,17 +17,16 @@ int main() {
     options.memtable_factory.reset(new LevelHashMemTableFactory(3, 1000));
     options.table_factory.reset(new LevelHashTableFactory(3));
     
-    // 2. 强制 L0 触发 Flush (写少点)
+    // 2. 强制 L0 触发 Flush 
     options.write_buffer_size = 1024 * 1024; // 1MB
     
-    Status s = DB::Open(options, "/tmp/rocksdb_level_hash_test", &db);
+    Status s = DB::Open(options, "/home/wam/HWKV/rocksdb/db_tmp", &db);
     assert(s.ok());
 
     // 3. 写入数据 (Bucket 0 和 Bucket 1 的数据)
     // 假设 MurmurHash 逻辑：
     // "key_b0_1" -> hash ...000
     // "key_b1_1" -> hash ...001
-    // 你可能需要预先算好几个 Key
     db->Put(WriteOptions(), "key1", "value1");
     db->Put(WriteOptions(), "key2", "value2");
 

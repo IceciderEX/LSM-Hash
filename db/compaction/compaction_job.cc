@@ -1065,11 +1065,11 @@ Status CompactionJob::RunLevelHashCompaction(uint32_t target_bucket_id) {
       
       ParsedInternalKey parsed_key;
       if (!ParseInternalKey(key, &parsed_key, false).ok()) continue;
-      
-      uint64_t hash = MurmurHash(parsed_key.user_key.data(), 
+
+      uint64_t hash = MurmurHash64A(parsed_key.user_key.data(), 
                                  static_cast<int>(parsed_key.user_key.size()), 0);
       
-      // Assume L0 G=3
+      // NOTE: Currently Assume L0 G=3
       uint32_t file_g = 3; 
       uint32_t b_idx = 0;
       if (file_g > 0) {

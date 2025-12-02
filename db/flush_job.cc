@@ -47,6 +47,10 @@
 #include "util/mutexlock.h"
 #include "util/stop_watch.h"
 
+#include "table/level_hash/level_hash_table.h"
+#include "file/writable_file_writer.h"
+#include "file/read_write_util.cc"
+
 namespace ROCKSDB_NAMESPACE {
 
 const char* GetFlushReasonString(FlushReason flush_reason) {
@@ -853,6 +857,189 @@ Status FlushJob::WriteLevel0Table() {
 
   meta_.temperature = mutable_cf_options_.default_write_temperature;
   file_options_.temperature = meta_.temperature;
+  
+  // Note that here we treat flush as level 0 compaction in internal stats
+  InternalStats::CompactionStats flush_stats(CompactionReason::kFlush, 1 /* count**/);
+
+  // for levelhash
+  // 代替原先的 WriteLevel0Table（要求有序逻辑）
+  if (strcmp(mutable_cf_options_.table_factory->Name(), "LevelHashTableFactory") == 0) {
+      uint64_t total_num_entries = 0;
+      uint64_t total_data_size = 0;
+      for (const auto* m : mems_) {
+          total_num_entries += m->NumEntries();
+          total_data_size += m->GetDataSize();
+      }
+      event_logger_->Log() << "job" << job_context_->job_id 
+                           << "event" << "flush_started" 
+                           << "num_memtables" << mems_.size()
+                           << "total_num_input_entries" << total_num_entries
+                           << "total_data_size" << total_data_size
+                           << "flush_reason" << GetFlushReasonString(flush_reason_);
+
+      // 2 meta
+      int64_t _current_time = 0;
+      clock_->GetCurrentTime(&_current_time);
+      const uint64_t current_time = static_cast<uint64_t>(_current_time);
+      uint64_t oldest_key_time = mems_.front()->ApproximateOldestKeyTime();
+      uint64_t oldest_ancester_time = std::min(current_time, oldest_key_time);
+      
+      meta_.oldest_ancester_time = oldest_ancester_time;
+      meta_.file_creation_time = current_time;  
+    
+      db_mutex_->Unlock(); 
+
+      FileSystem* fs = db_options_.fs.get();
+      assert(fs);
+
+      // 1. Prepare File Writer
+      std::unique_ptr<WritableFileWriter> file_writer;
+      std::string fname = TableFileName(db_options_.db_paths, meta_.fd.GetNumber(), meta_.fd.GetPathId());
+      {
+          std::unique_ptr<FSWritableFile> writable_file;
+          s = NewWritableFile(fs, fname, &writable_file, file_options_);
+          if (s.ok()) {
+             file_writer.reset(new WritableFileWriter(
+                 std::move(writable_file), fname, file_options_, 
+                 db_options_.clock, io_tracer_, db_options_.stats, 
+                 Histograms::SST_WRITE_MICROS));
+          }
+      }
+
+      if (s.ok()) {
+        // 2. Prepare Builder Options
+        // [Fix 1] Use cfd_->ioptions() instead of db_options_
+        TableBuilderOptions tb_options(
+            cfd_->ioptions(),           // Correct ImmutableOptions source
+            mutable_cf_options_, 
+            ReadOptions(), WriteOptions(), 
+            cfd_->internal_comparator(), 
+            cfd_->internal_tbl_prop_coll_factories(), 
+            output_compression_, 
+            mutable_cf_options_.compression_opts, 
+            cfd_->GetID(), cfd_->GetName(), 
+            0, /* level 0 */
+            0, /* newest_key_time */
+            false, /* is_bottommost */
+            TableFileCreationReason::kFlush, 
+            0, 0, db_id_, db_session_id_, 0, meta_.fd.GetNumber()
+        );
+
+        // Create the custom builder
+        // TODO: Fetch G dynamically. Here assuming L0 G=3.
+        auto level_hash_builder = new LevelHashTableBuilder(tb_options, file_writer.get(), 3);
+        std::unique_ptr<TableBuilder> builder(level_hash_builder);
+        Arena arena;
+
+        // 3. Unordered Traversal & Boundary Tracking
+        InternalKey smallest_key, largest_key;
+        bool first_key_found = false;
+        const Comparator* ucmp = cfd_->user_comparator(); // For sanity check, though we need internal cmp
+        uint64_t num_input_records = 0;
+
+        for (ReadOnlyMemTable* m : mems_) {
+            // Note: LevelHashMemTable::NewIterator might ignore some of these, but we must satisfy the virtual interface.
+            InternalIterator* iter = m->NewIterator(
+                ReadOptions(), 
+                seqno_to_time_mapping_.get(), 
+                &arena, 
+                mutable_cf_options_.prefix_extractor.get(), 
+                true     /* for_flush */
+            );
+            
+            for (iter->SeekToFirst(); iter->Valid(); iter->Next()) {
+                Slice key = iter->key();
+                Slice val = iter->value();
+                builder->Add(key, val);
+                num_input_records++;
+
+                ParsedInternalKey parsed;
+                if (!ParseInternalKey(key, &parsed, false).ok()) continue;
+                // We keep the raw encoded slice or InternalKey object? 
+                // InternalKey object is safer for comparison.
+                InternalKey current_ikey;
+                current_ikey.DecodeFrom(key);
+
+                if (!first_key_found) {
+                    smallest_key = current_ikey;
+                    largest_key = current_ikey;
+                    first_key_found = true;
+                } else {
+                    // Compare using internal comparator
+                    if (cfd_->internal_comparator().Compare(current_ikey, smallest_key) < 0) {
+                        smallest_key = current_ikey;
+                    }
+                    if (cfd_->internal_comparator().Compare(current_ikey, largest_key) > 0) {
+                        largest_key = current_ikey;
+                    }
+                }
+            }
+        }
+
+        // 4. Finish
+        s = builder->Finish();
+        
+        if (s.ok()) {
+            // FileMetaData
+            meta_.fd.file_size = builder->FileSize();
+            meta_.file_checksum = builder->GetFileChecksum();
+            meta_.file_checksum_func_name = builder->GetFileChecksumFuncName();
+            meta_.valid_bucket_bitmap = level_hash_builder->GetValidBucketBitmap();
+            
+            // Fill boundaries. If table is empty, smallest/largest remain default (empty/invalid),
+            // which usually requires handling, but Flush shouldn't produce empty files often.
+            if (first_key_found) {
+                meta_.smallest = smallest_key;
+                meta_.largest = largest_key;
+            } else {
+                // Handle empty file case if necessary, though logic below usually discards 0-byte files.
+            }
+            flush_stats.num_input_records = num_input_records;
+            flush_stats.num_output_records = builder->NumEntries();
+            flush_stats.num_output_files = 1;
+            flush_stats.bytes_written = builder->FileSize();
+            
+            // Set SeqNos - Since we bypassed BuildTable which calculates these, we must approximate.
+            // For L0 flush, we can take the min/max from the MemTables themselves.
+            // But since we iterated everything, we could have tracked them. 
+            // Simplified: Use the file boundaries' seqnos.
+            meta_.fd.smallest_seqno = smallest_key.Valid() ? GetInternalKeySeqno(smallest_key.Encode()) : 0;
+            meta_.fd.largest_seqno = largest_key.Valid() ? GetInternalKeySeqno(largest_key.Encode()) : kMaxSequenceNumber;
+        } else {
+            if (builder->io_status().IsIOError()) {
+                s = builder->io_status();
+            }
+        }
+      }
+      
+      // fsync
+      if (s.ok() && output_file_directory_ != nullptr && sync_output_directory_) {
+        s = output_file_directory_->FsyncWithDirOptions(
+            IOOptions(), nullptr,
+            DirFsyncOptions(DirFsyncOptions::FsyncReason::kNewFileSynced));
+      }
+      
+      const uint64_t micros = clock_->NowMicros() - start_micros;
+      const uint64_t cpu_micros = clock_->CPUMicros() - start_cpu_micros;
+      flush_stats.micros = micros;
+      flush_stats.cpu_micros = cpu_micros;
+      ROCKS_LOG_INFO(db_options_.info_log,
+                     "[%s] [JOB %d] Level-Hash Flush finished. table #%" PRIu64 
+                     ": %" PRIu64 " bytes %s",
+                     cfd_->GetName().c_str(), job_context_->job_id,
+                     meta_.fd.GetNumber(), meta_.fd.GetFileSize(),
+                     s.ToString().c_str());
+
+      // VersionSet STATS
+      cfd_->internal_stats()->AddCompactionStats(0 /* level */, thread_pri_, flush_stats);
+      cfd_->internal_stats()->AddCFStats(InternalStats::BYTES_FLUSHED, flush_stats.bytes_written);
+      
+      RecordTimeToHistogram(stats_, FLUSH_TIME, micros);
+      RecordFlushIOStats(); 
+
+      db_mutex_->Lock();
+      return s; 
+  }
 
   const auto* ucmp = cfd_->internal_comparator().user_comparator();
   assert(ucmp);
@@ -862,8 +1049,8 @@ Status FlushJob::WriteLevel0Table() {
 
   std::vector<BlobFileAddition> blob_file_additions;
   // Note that here we treat flush as level 0 compaction in internal stats
-  InternalStats::CompactionStats flush_stats(CompactionReason::kFlush,
-                                             1 /* count**/);
+  // InternalStats::CompactionStats flush_stats(CompactionReason::kFlush,
+  //                                            1 /* count**/);
   {
     auto write_hint = base_->storage_info()->CalculateSSTWriteHint(
         /*level=*/0, db_options_.calculate_sst_write_lifetime_hint_set);
