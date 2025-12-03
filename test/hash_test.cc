@@ -43,9 +43,9 @@ int main() {
     // 6. 读取 (SST Read)
     // 这时候数据在 L0 SST 文件中
     value.clear();
-    s = db->Get(ReadOptions(), "key1", &value);
+    s = db->Get(ReadOptions(), "key2", &value);
     assert(s.ok());
-    assert(value == "value1");
+    assert(value == "value2");
 
     delete db;
     printf("Stage 1 Passed!\n");

@@ -908,7 +908,6 @@ Status FlushJob::WriteLevel0Table() {
 
       if (s.ok()) {
         // 2. Prepare Builder Options
-        // [Fix 1] Use cfd_->ioptions() instead of db_options_
         TableBuilderOptions tb_options(
             cfd_->ioptions(),           // Correct ImmutableOptions source
             mutable_cf_options_, 
@@ -931,12 +930,15 @@ Status FlushJob::WriteLevel0Table() {
         std::unique_ptr<TableBuilder> builder(level_hash_builder);
         Arena arena;
 
-        // 3. Unordered Traversal & Boundary Tracking
+        // 3. 对 BuildTable 的替代
+        // TODO: 原有的 CompactionIterator、RangeDelAggregator、Blob 的支持？
         InternalKey smallest_key, largest_key;
         bool first_key_found = false;
         const Comparator* ucmp = cfd_->user_comparator(); // For sanity check, though we need internal cmp
         uint64_t num_input_records = 0;
 
+        SequenceNumber min_seqno = kMaxSequenceNumber;
+        SequenceNumber max_seqno = 0;
         for (ReadOnlyMemTable* m : mems_) {
             // Note: LevelHashMemTable::NewIterator might ignore some of these, but we must satisfy the virtual interface.
             InternalIterator* iter = m->NewIterator(
@@ -950,11 +952,15 @@ Status FlushJob::WriteLevel0Table() {
             for (iter->SeekToFirst(); iter->Valid(); iter->Next()) {
                 Slice key = iter->key();
                 Slice val = iter->value();
+                ROCKS_LOG_INFO(db_options_.info_log, "Flush Key: %s", key.ToString(true).c_str());
                 builder->Add(key, val);
                 num_input_records++;
 
-                ParsedInternalKey parsed;
-                if (!ParseInternalKey(key, &parsed, false).ok()) continue;
+                ParsedInternalKey parsed_key;
+                if (!ParseInternalKey(key, &parsed_key, false).ok()) continue;
+                // get Seqno
+                if (parsed_key.sequence < min_seqno) min_seqno = parsed_key.sequence;
+                if (parsed_key.sequence > max_seqno) max_seqno = parsed_key.sequence;
                 // We keep the raw encoded slice or InternalKey object? 
                 // InternalKey object is safer for comparison.
                 InternalKey current_ikey;
@@ -991,34 +997,37 @@ Status FlushJob::WriteLevel0Table() {
             if (first_key_found) {
                 meta_.smallest = smallest_key;
                 meta_.largest = largest_key;
+                // correct?
+                meta_.fd.smallest_seqno = min_seqno;
+                meta_.fd.largest_seqno = max_seqno;
             } else {
                 // Handle empty file case if necessary, though logic below usually discards 0-byte files.
+                ROCKS_LOG_ERROR(db_options_.info_log, "Flush produced empty boundaries!");
+                meta_.fd.smallest_seqno = 0; 
+                meta_.fd.largest_seqno = 0;
             }
             flush_stats.num_input_records = num_input_records;
             flush_stats.num_output_records = builder->NumEntries();
             flush_stats.num_output_files = 1;
             flush_stats.bytes_written = builder->FileSize();
             
-            // Set SeqNos - Since we bypassed BuildTable which calculates these, we must approximate.
-            // For L0 flush, we can take the min/max from the MemTables themselves.
-            // But since we iterated everything, we could have tracked them. 
-            // Simplified: Use the file boundaries' seqnos.
-            meta_.fd.smallest_seqno = smallest_key.Valid() ? GetInternalKeySeqno(smallest_key.Encode()) : 0;
-            meta_.fd.largest_seqno = largest_key.Valid() ? GetInternalKeySeqno(largest_key.Encode()) : kMaxSequenceNumber;
-        } else {
             if (builder->io_status().IsIOError()) {
                 s = builder->io_status();
             }
         }
       }
       
-      // fsync
+      // fsync and close
       if (s.ok() && output_file_directory_ != nullptr && sync_output_directory_) {
         s = output_file_directory_->FsyncWithDirOptions(
             IOOptions(), nullptr,
             DirFsyncOptions(DirFsyncOptions::FsyncReason::kNewFileSynced));
       }
+      if (s.ok()) {
+          s = file_writer->Close(IOOptions());
+      }
       
+      // some stats
       const uint64_t micros = clock_->NowMicros() - start_micros;
       const uint64_t cpu_micros = clock_->CPUMicros() - start_cpu_micros;
       flush_stats.micros = micros;
@@ -1038,6 +1047,36 @@ Status FlushJob::WriteLevel0Table() {
       RecordFlushIOStats(); 
 
       db_mutex_->Lock();
+
+      base_->Unref();
+
+      // Note that if file_size is zero, the file has been deleted and
+      // should not be added to the manifest.
+      const bool has_output = meta_.fd.GetFileSize() > 0;
+
+      if (s.ok() && has_output) {
+        TEST_SYNC_POINT("DBImpl::FlushJob:SSTFileCreated");
+        // if we have more than 1 background thread, then we cannot
+        // insert files directly into higher levels because some other
+        // threads could be concurrently producing compacted files for
+        // that key range.
+        // Add file to L0
+        edit_->AddFile(0 /* level */, meta_.fd.GetNumber(), meta_.fd.GetPathId(),
+                      meta_.fd.GetFileSize(), meta_.smallest, meta_.largest,
+                      meta_.fd.smallest_seqno, meta_.fd.largest_seqno,
+                      meta_.marked_for_compaction, meta_.temperature,
+                      meta_.oldest_blob_file_number, meta_.oldest_ancester_time,
+                      meta_.file_creation_time, meta_.epoch_number,
+                      meta_.file_checksum, meta_.file_checksum_func_name,
+                      meta_.unique_id, meta_.compensated_range_deletion_size,
+                      meta_.tail_size, meta_.user_defined_timestamps_persisted,
+                      // for levelhash
+                      meta_.valid_bucket_bitmap);
+      }
+      // Piggyback FlushJobInfo on the first first flushed memtable.
+      if (!mems_.empty()) {
+          mems_[0]->SetFlushJobInfo(GetFlushJobInfo());
+      }
       return s; 
   }
 

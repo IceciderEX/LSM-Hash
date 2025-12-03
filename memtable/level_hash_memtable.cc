@@ -91,8 +91,8 @@ bool LevelHashMemTable::Contains(const char* key) const {
 void LevelHashMemTable::Get(const LookupKey& k, void* callback_args,
                             bool (*callback_func)(void* arg, const char* entry)) {
   Slice user_key = k.user_key();
-  uint32_t hash = MurmurHash(user_key.data(), static_cast<int>(user_key.size()), 0);
-  uint32_t bucket_idx = hash & (num_buckets_ - 1);
+  uint64_t hash = MurmurHash64A(user_key.data(), user_key.size(), 0);
+  uint32_t bucket_idx = GetBucketIndex(hash, G_);
 
   const Bucket* bucket = buckets_[bucket_idx].get();
   
@@ -117,7 +117,7 @@ bool LevelHashMemTable::IsFull() const {
 
 MemTableRep::Iterator* LevelHashMemTable::GetIterator(Arena* arena) {
   // 通常由 FlushJob 在 MemTable 变为 Immutable 后调用，
-  // 此时不再有写入，因此不需要加锁。但如果在并发写入时迭代，该实现是不安全的。
+  // 此时不再有写入，因此不需要加锁。但如果在并发写入时迭代，该实现不安全
   if (arena == nullptr) {
     return new LevelHashIterator(this);
   } else {

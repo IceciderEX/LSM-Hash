@@ -59,6 +59,8 @@ void LevelHashTableBuilder::Add(const Slice& key, const Slice& value) {
   uint32_t bucket_idx = GetBucketIndex(hash, G_);
 
   try {
+    // TODO: 
+    // 对于 Compaction (L1+)： 如果后续 Compaction 也复用这个 Builder， 感觉会 oom
     buffer_[bucket_idx].emplace_back(key.ToString(), value.ToString());
     num_entries_++;
     
@@ -331,16 +333,15 @@ Status LevelHashTableReader::Get(const ReadOptions& /*read_options*/,
     bool matched = false;
     Status read_status;
     
-    // 调用 GetContext::SaveValue
-    // 参数: (ParsedInternalKey, Value, matched, read_status, value_pinner)
+    // get 
     bool keep_searching = get_context->SaveValue(parsed_key, entry_value_slice, &matched, &read_status, nullptr);
 
     if (!read_status.ok()) {
         return read_status;
     }
 
-    // SaveValue 返回 false 表示找到了结果（或者确定不存在），应停止搜索
-    // SaveValue 返回 true 表示需要继续搜索（例如 Key 不匹配，或者只是合并了部分值）
+    //  false 表示找到了结果（或者确定不存在），应停止搜索
+    //  true 表示需要继续搜索（例如 Key 不匹配，或者只是合并了部分值）
     if (!keep_searching) {
         return Status::OK();
     }
@@ -348,8 +349,6 @@ Status LevelHashTableReader::Get(const ReadOptions& /*read_options*/,
 
   return Status::OK();
 }
-
-// --- 实现纯虚函数 ---
 
 uint64_t LevelHashTableReader::ApproximateOffsetOf(const ReadOptions& /*read_options*/,
                                                    const Slice& key,
