@@ -17,12 +17,7 @@ Compaction* LevelHashCompactionPicker::PickCompaction(
     const SnapshotChecker* /*snapshot_checker*/, VersionStorageInfo* vstorage,
     LogBuffer* /*log_buffer*/, bool /*require_max_output_level*/) {
 
-  // 1. 扫描 L0 所有文件，统计每个 Bucket 的引用计数
-  // 假设 L0 的 G 值是固定的 (initial_hash_level_g)
-  // 获取 G 值的方法：通常从 TableProperties 获取，或者假定全局配置
-  // 这里简化：假设 Bucket ID 空间是 [0, 2^G - 1]
-  // 实际上我们需要遍历所有 L0 文件，查看它们的 valid_bucket_bitmap
-  
+  // TODO: 完善 compaction 的逻辑
   std::map<uint32_t, std::vector<FileMetaData*>> bucket_to_files;
   
   const auto& l0_files = vstorage->LevelFiles(0);

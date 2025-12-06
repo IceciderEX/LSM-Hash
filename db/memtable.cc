@@ -44,6 +44,8 @@
 #include "util/coding.h"
 #include "util/mutexlock.h"
 
+#include "memtable/level_hash_memtable.h"
+
 namespace ROCKSDB_NAMESPACE {
 
 ImmutableMemTableOptions::ImmutableMemTableOptions(
@@ -223,6 +225,14 @@ bool MemTable::ShouldFlushNow() {
       table_->ApproximateMemoryUsage() + arena_.MemoryAllocatedBytes();
 
   approximate_memory_usage_.StoreRelaxed(allocated_memory);
+
+  // for levelhash
+  if (auto lh = dynamic_cast<LevelHashMemTable*>(table_.get())) {
+      if (lh->NeedFlush()) {
+          return true;
+      }
+  }
+
 
   // if we can still allocate one more block without exceeding the
   // over-allocation ratio, then we should not flush.

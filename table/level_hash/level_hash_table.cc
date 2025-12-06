@@ -85,7 +85,6 @@ Status LevelHashTableBuilder::Finish() {
   for (uint32_t i = 0; i < num_buckets_; ++i) {
     if (!buffer_[i].empty()) {
       // Bucket i 有数据，置位
-      // 索引: i / 64, 位偏移: i % 64
       valid_bucket_bitmap_[i / 64] |= (1ULL << (i % 64));
     }
   }
@@ -198,6 +197,7 @@ LevelHashTableReader::LevelHashTableReader(
       num_buckets_(0),
       index_offset_(0) {
   table_properties_ = std::make_shared<TableProperties>();
+  user_comparator_ = table_reader_options_.internal_comparator.user_comparator();
 }
 
 LevelHashTableReader::~LevelHashTableReader() {}
@@ -330,10 +330,19 @@ Status LevelHashTableReader::Get(const ReadOptions& /*read_options*/,
         return Status::Corruption("LevelHashTable: Invalid internal key in bucket");
     }
 
+
     bool matched = false;
     Status read_status;
+
+    if (user_comparator_->Compare(parsed_key.user_key, user_key) != 0) {
+        // Key 不匹配，继续查看 Bucket 中的下一个 Entry
+        continue; 
+    }
     
-    // get 
+    // get_context.cc SaveValue —— merge, seqno logic ...
+    // 返回 false 意味着找到了最终结果（Found 或 Deleted），应停止搜索
+    // 返回 true 意味着虽然 Key 匹配，但可能是一个 Merge 操作，需要继续找更旧的版本
+    // TODO
     bool keep_searching = get_context->SaveValue(parsed_key, entry_value_slice, &matched, &read_status, nullptr);
 
     if (!read_status.ok()) {
@@ -354,8 +363,8 @@ uint64_t LevelHashTableReader::ApproximateOffsetOf(const ReadOptions& /*read_opt
                                                    const Slice& key,
                                                    TableReaderCaller /*caller*/) {
   Slice user_key = ExtractUserKey(key);
-  uint32_t hash = MurmurHash(user_key.data(), static_cast<int>(user_key.size()), 0);
-  uint32_t bucket_idx = hash & (num_buckets_ - 1);
+  uint64_t hash = MurmurHash64A(user_key.data(), user_key.size(), 0);
+  uint32_t bucket_idx = GetBucketIndex(hash, G_);
   if (bucket_idx < bucket_offsets_.size()) {
     return bucket_offsets_[bucket_idx];
   }

@@ -952,7 +952,6 @@ Status FlushJob::WriteLevel0Table() {
             for (iter->SeekToFirst(); iter->Valid(); iter->Next()) {
                 Slice key = iter->key();
                 Slice val = iter->value();
-                ROCKS_LOG_INFO(db_options_.info_log, "Flush Key: %s", key.ToString(true).c_str());
                 builder->Add(key, val);
                 num_input_records++;
 
@@ -965,6 +964,8 @@ Status FlushJob::WriteLevel0Table() {
                 // InternalKey object is safer for comparison.
                 InternalKey current_ikey;
                 current_ikey.DecodeFrom(key);
+
+                // ROCKS_LOG_INFO(db_options_.info_log, "Flush Key: %s", current_ikey);
 
                 if (!first_key_found) {
                     smallest_key = current_ikey;
@@ -1000,6 +1001,12 @@ Status FlushJob::WriteLevel0Table() {
                 // correct?
                 meta_.fd.smallest_seqno = min_seqno;
                 meta_.fd.largest_seqno = max_seqno;
+
+                ROCKS_LOG_INFO(db_options_.info_log, 
+                    "Flush L0 Bounds: Smallest[%s] Largest[%s] Seq[%lu-%lu]",
+                    smallest_key.user_key().ToString().c_str(),
+                    largest_key.user_key().ToString().c_str(),
+                    min_seqno, max_seqno);
             } else {
                 // Handle empty file case if necessary, though logic below usually discards 0-byte files.
                 ROCKS_LOG_ERROR(db_options_.info_log, "Flush produced empty boundaries!");

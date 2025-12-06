@@ -13,16 +13,17 @@ namespace ROCKSDB_NAMESPACE {
 
 LevelHashMemTable::LevelHashMemTable(
     const MemTableRep::KeyComparator& comparator, Allocator* allocator,
-    uint32_t G, size_t total_entry_threshold)
+    uint32_t G, size_t bucket_entry_threshold, size_t total_memory_threshold)
     : MemTableRep(allocator),
       G_(G),
       num_buckets_(1 << G),
-      total_entry_threshold_(total_entry_threshold),
-      num_entries_(0),
+      bucket_entry_threshold_(bucket_entry_threshold),
+      total_memory_threshold_(total_memory_threshold),
+      current_memory_usage_(0),
+      flush_requested_(false), 
       allocator_(allocator),
       comparator_(comparator) {
   
-  // 初始化 Buckets
   buckets_.reserve(num_buckets_);
   for (uint32_t i = 0; i < num_buckets_; ++i) {
     buckets_.emplace_back(new Bucket());
@@ -50,8 +51,29 @@ inline uint32_t GetBucketIndex(uint64_t hash, uint32_t G) {
   return static_cast<uint32_t>(reversed >> (64 - G));
 }
 
+// [Varint KeyLen] [Key Bytes] [Varint ValLen] [Val Bytes]
+static size_t CalculateEntrySize(const char* ptr) {
+    const char* start = ptr;
+    uint32_t key_len = 0;
+    const char* p = GetVarint32Ptr(ptr, ptr + 5, &key_len); 
+    if (p == nullptr) return 0; 
+    
+    p += key_len; 
+    
+    uint32_t val_len = 0;
+    p = GetVarint32Ptr(p, p + 5, &val_len);
+    if (p == nullptr) return 0;
+    
+    p += val_len;  
+    return p - start;
+}
+
 void LevelHashMemTable::Insert(KeyHandle handle) {
   const char* key_ptr = static_cast<const char*>(handle);
+  size_t entry_size = CalculateEntrySize(key_ptr);
+  // TODO: memory_usage 的计算方式？原生 rocksdb 使用 arena 分配内存，这里先简化
+  current_memory_usage_.fetch_add(entry_size + sizeof(KeyHandle), std::memory_order_relaxed);
+
   Slice internal_key = GetLengthPrefixedSlice(key_ptr);
   Slice user_key = ExtractUserKey(internal_key);
   // eg. user_key = "key1", hash = 9539024932675925583
@@ -64,6 +86,11 @@ void LevelHashMemTable::Insert(KeyHandle handle) {
   {
     std::lock_guard<std::mutex> lock(bucket->mutex_);
     bucket->entries_.push_back(handle);
+
+    // 检查单 Bucket 阈值，触发 Flush
+    if (bucket->entries_.size() >= bucket_entry_threshold_) {
+        flush_requested_.store(true, std::memory_order_relaxed);
+    }
   }
   
   num_entries_.fetch_add(1, std::memory_order_relaxed);
@@ -107,12 +134,8 @@ void LevelHashMemTable::Get(const LookupKey& k, void* callback_args,
   }
 }
 
-size_t LevelHashMemTable::ApproximateMemoryUsage() {
-  return num_entries_.load(std::memory_order_relaxed) * 128; // 简易估算
-}
-
-bool LevelHashMemTable::IsFull() const {
-  return num_entries_.load(std::memory_order_relaxed) >= total_entry_threshold_;
+size_t LevelHashMemTable::ApproximateMemoryUsage() {  
+  return current_memory_usage_.load(std::memory_order_relaxed);
 }
 
 MemTableRep::Iterator* LevelHashMemTable::GetIterator(Arena* arena) {

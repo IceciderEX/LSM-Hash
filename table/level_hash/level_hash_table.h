@@ -313,6 +313,8 @@ class LevelHashTableReader : public TableReader {
   uint32_t num_buckets_;
   uint64_t index_offset_;
   std::vector<uint64_t> bucket_offsets_;
+
+  const Comparator* user_comparator_;
 };
 
 // Factory
