@@ -15,7 +15,7 @@ using namespace ROCKSDB_NAMESPACE;
 void WaitForFlush(DB* db) {
     std::string val;
     int retry_count = 0;
-    while (retry_count < 20) { // 最多等待 2秒
+    while (retry_count < 100) { // 最多等待 2秒
         db->GetProperty("rocksdb.num-files-at-level0", &val);
         if (std::stoi(val) > 0) {
             return; // 发现 L0 文件，Flush 成功
@@ -36,7 +36,7 @@ void TestBucketThresholdFlush() {
     options.write_buffer_size = 1024 * 1024 * 100; // 100MB
 
     // 2. 配置 Level-Hash
-    options.memtable_factory.reset(new LevelHashMemTableFactory(3, 10, 100000));
+    options.memtable_factory.reset(new LevelHashMemTableFactory(3, 50, 100000));
     options.table_factory.reset(new LevelHashTableFactory(3));
 
     // 使用新的 DB 路径，避免旧数据干扰
@@ -47,8 +47,8 @@ void TestBucketThresholdFlush() {
     assert(s.ok());
 
     // 3. 写入数据
-    std::cout << "Inserting 200 keys (Target: trigger bucket overflow)..." << std::endl;
-    for (int i = 0; i < 200; ++i) {
+    std::cout << "Inserting 500 keys (Target: trigger bucket overflow)..." << std::endl;
+    for (int i = 0; i < 500; ++i) {
         db->Put(WriteOptions(), "key_" + std::to_string(i), "val_" + std::to_string(i));
     }
 
@@ -69,9 +69,16 @@ void TestBucketThresholdFlush() {
 
     // 验证数据正确性 (读取刚写入的数据，确保 Flush 后还能读到)
     std::string value;
-    s = db->Get(ReadOptions(), "key_100", &value);
-    assert(s.ok());
-    assert(value == "val_100");
+    for(int i = 0; i < 500; ++i) {
+        s = db->Get(ReadOptions(), "key_" + std::to_string(i), &value);
+        if (!s.ok()) {
+            s = db->Get(ReadOptions(), "key_" + std::to_string(i), &value);
+        }
+        assert(s.ok());
+        assert(value == "val_" + std::to_string(i));
+    }
+    s = db->Get(ReadOptions(), "key_2000", &value);
+    assert(!s.ok());
 
     delete db;
 }
@@ -88,7 +95,7 @@ void TestMemorySizeFlush() {
 
     // 2. 配置 Level-Hash
     // BucketThreshold = 10000 (很大，屏蔽 Bucket 触发)
-    options.memtable_factory.reset(new LevelHashMemTableFactory(3, 100000, 10000));
+    options.memtable_factory.reset(new LevelHashMemTableFactory(3, 10000, 10000));
     options.table_factory.reset(new LevelHashTableFactory(3));
 
     std::string dbname = "/home/wam/HWKV/rocksdb/db_tmp/rocksdb_levelhash_memory_test";

@@ -105,10 +105,22 @@ bool LevelHashMemTable::Contains(const char* key) const {
   const Bucket* bucket = buckets_[bucket_idx].get();
   // 加锁读取 (防止读取时发生 vector 扩容导致迭代器失效)
   std::lock_guard<std::mutex> lock(bucket->mutex_);
-  
+
+  const MemTable::KeyComparator& impl_comparator = 
+      static_cast<const MemTable::KeyComparator&>(comparator_);
+  const Comparator* user_comparator = impl_comparator.comparator.user_comparator();
+
   for (auto it = bucket->entries_.rbegin(); it != bucket->entries_.rend(); ++it) {
-    Slice current_internal_key = GetLengthPrefixedSlice(static_cast<const char*>(*it));
-    if (comparator_(key, current_internal_key.data()) == 0) {
+    const char* entry_ptr = static_cast<const char*>(*it);
+    
+    // User Key
+    uint32_t key_len;
+    const char* k_ptr = GetVarint32Ptr(entry_ptr, entry_ptr + 5, &key_len);
+    if (k_ptr == nullptr) continue;
+    
+    Slice current_internal_key(k_ptr, key_len);
+    Slice current_user_key = ExtractUserKey(current_internal_key);
+    if (user_comparator->Compare(current_user_key, user_key) == 0) {
       return true;
     }
   }
@@ -126,9 +138,24 @@ void LevelHashMemTable::Get(const LookupKey& k, void* callback_args,
   // 加锁读取
   std::lock_guard<std::mutex> lock(bucket->mutex_);
 
+  const MemTable::KeyComparator& impl_comparator = 
+      static_cast<const MemTable::KeyComparator&>(comparator_);
+  const Comparator* user_comparator = impl_comparator.comparator.user_comparator();
+
   for (auto it = bucket->entries_.rbegin(); it != bucket->entries_.rend(); ++it) {
-    const char* key_ptr = static_cast<const char*>(*it);
-    if (!callback_func(callback_args, key_ptr)) {
+    const char* entry_ptr = static_cast<const char*>(*it);
+    // [KeyLen][KeyBytes][ValLen][ValBytes]
+    uint32_t key_length;
+    const char* key_ptr = GetVarint32Ptr(entry_ptr, entry_ptr + 5, &key_length);
+    if (key_ptr == nullptr) continue; // 异常保护
+    
+    Slice internal_key(key_ptr, key_length);
+    Slice current_user_key = ExtractUserKey(internal_key);
+    if (user_comparator->Compare(current_user_key, user_key) != 0) {
+        continue;
+    }
+    auto s = callback_func(callback_args, entry_ptr);
+    if (!s) {
       break;
     }
   }

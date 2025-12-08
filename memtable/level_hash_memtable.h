@@ -9,6 +9,7 @@
 
 #include "rocksdb/memtablerep.h"
 #include "rocksdb/slice.h"
+#include "db/memtable.h"
 
 namespace ROCKSDB_NAMESPACE {
 
