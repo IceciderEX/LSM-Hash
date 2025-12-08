@@ -1066,27 +1066,19 @@ Status CompactionJob::Run() {
 }
 
 void CompactionJob::InitializeLevelHashCompactionRun(uint32_t target_bucket_id) {
-  // 1. 更新线程状态
-  // 这使得 'SHOW ENGINE ROCKSDB STATUS' 或后台监控能看到当前线程处于 COMPACTION_RUN 阶段
-  // AutoThreadOperationStageUpdater 会在函数结束析构时自动更新状态，但这里我们需要显式设置，
-  // 因为 RunLevelHashCompaction 是一个长运行函数。
+  TEST_SYNC_POINT("CompactionJob::InitializeLevelHashCompactionRun:Start");
   ThreadStatusUtil::SetThreadOperation(ThreadStatus::OP_COMPACTION);
-  
-  // 2. 刷新日志缓冲区
-  // 将 Pick 阶段可能积攒的日志刷入文件，确保崩溃时能看到之前的决策信息
   if (log_buffer_) {
     log_buffer_->FlushBufferToLog();
   }
-
-  // 3. 复用原生的 LogCompaction
-  // 这会打印标准的 "[default] [JOB 12] Compacting 4@0 + 0@1 files to L1..." 摘要
+  // rocksdb
   LogCompaction();
 
-  // 4. [Level-Hash 特有] 打印详细的 Bucket 和 G 值流转信息
+  // levelhash specific
   Compaction* c = compact_->compaction;
   ColumnFamilyData* cfd = c->column_family_data();
   
-  // TODO: 从 VersionStorageInfo 或配置中获取 kInitialG
+  // TODO: options load
   const uint32_t kInitialG = 3; 
   int input_level = c->start_level();
   int output_level = c->output_level();
@@ -1106,10 +1098,6 @@ void CompactionJob::InitializeLevelHashCompactionRun(uint32_t target_bucket_id) 
       output_g,
       input_g,
       output_g);
-      
-  // 5. 记录开始时间点 (用于后续计算 CPU/Micros 耗时)
-  // 注意：虽然 Run() 里也获取了时间，但这里留个记录点也是好的编程习惯
-  TEST_SYNC_POINT("CompactionJob::InitializeLevelHashCompactionRun:Start");
 }
 
 // NOTE: NOT DONE
