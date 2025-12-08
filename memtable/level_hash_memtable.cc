@@ -54,31 +54,33 @@ inline uint32_t GetBucketIndex(uint64_t hash, uint32_t G) {
 // [Varint KeyLen] [Key Bytes] [Varint ValLen] [Val Bytes]
 static size_t CalculateEntrySize(const char* ptr) {
     const char* start = ptr;
+    // Varint32: 5 byte
     uint32_t key_len = 0;
     const char* p = GetVarint32Ptr(ptr, ptr + 5, &key_len); 
     if (p == nullptr) return 0; 
-    
     p += key_len; 
-    
+
     uint32_t val_len = 0;
     p = GetVarint32Ptr(p, p + 5, &val_len);
     if (p == nullptr) return 0;
-    
     p += val_len;  
+
     return p - start;
 }
 
 void LevelHashMemTable::Insert(KeyHandle handle) {
+  // KeyHandle：一个指向内存中 entry 的指针
   const char* key_ptr = static_cast<const char*>(handle);
   size_t entry_size = CalculateEntrySize(key_ptr);
   // TODO: memory_usage 的计算方式？原生 rocksdb 使用 arena 分配内存，这里先简化
+  // TODO: arena 的支持
   current_memory_usage_.fetch_add(entry_size + sizeof(KeyHandle), std::memory_order_relaxed);
 
   Slice internal_key = GetLengthPrefixedSlice(key_ptr);
   Slice user_key = ExtractUserKey(internal_key);
   // eg. user_key = "key1", hash = 9539024932675925583
   uint64_t hash = MurmurHash64A(user_key.data(), user_key.size(), 0);
-  // eg. 9539024932675925583 -> bucket 7
+  // eg. 9539024932675925583 -> bucket 7, G = 3
   uint32_t bucket_idx = GetBucketIndex(hash, G_);
 
   // 加锁写入（暂定）
@@ -127,6 +129,7 @@ bool LevelHashMemTable::Contains(const char* key) const {
   return false;
 }
 
+// TODO: InsertConcurrently
 void LevelHashMemTable::Get(const LookupKey& k, void* callback_args,
                             bool (*callback_func)(void* arg, const char* entry)) {
   Slice user_key = k.user_key();
@@ -143,11 +146,12 @@ void LevelHashMemTable::Get(const LookupKey& k, void* callback_args,
   const Comparator* user_comparator = impl_comparator.comparator.user_comparator();
 
   for (auto it = bucket->entries_.rbegin(); it != bucket->entries_.rend(); ++it) {
+    // entry_ptr：KeyHandle 
     const char* entry_ptr = static_cast<const char*>(*it);
     // [KeyLen][KeyBytes][ValLen][ValBytes]
     uint32_t key_length;
     const char* key_ptr = GetVarint32Ptr(entry_ptr, entry_ptr + 5, &key_length);
-    if (key_ptr == nullptr) continue; // 异常保护
+    if (key_ptr == nullptr) continue; 
     
     Slice internal_key(key_ptr, key_length);
     Slice current_user_key = ExtractUserKey(internal_key);

@@ -38,6 +38,8 @@ LevelHashTableBuilder::LevelHashTableBuilder(
       file_(file),
       io_status_(IOStatus::OK()),
       num_entries_(0) {
+  // 使用 context 获取 current_level
+  // TODO：检查是否生效
   const auto& context = static_cast<const TablePropertiesCollectorFactory::Context&>(tb_options);
   int current_level = (context.level_at_creation == TablePropertiesCollectorFactory::Context::kUnknownLevelAtCreation) 
                       ? 0 
@@ -59,7 +61,7 @@ void LevelHashTableBuilder::Add(const Slice& key, const Slice& value) {
   uint32_t bucket_idx = GetBucketIndex(hash, G_);
 
   try {
-    // TODO: 
+    // TODO: 考虑内存中进行该操作的占用问题
     // 对于 Compaction (L1+)： 如果后续 Compaction 也复用这个 Builder， 感觉会 oom
     buffer_[bucket_idx].emplace_back(key.ToString(), value.ToString());
     num_entries_++;
@@ -75,6 +77,7 @@ void LevelHashTableBuilder::Add(const Slice& key, const Slice& value) {
 }
 
 // 将 buf 中的数据实际写入到 sst
+// TODO：检查代码适配问题
 Status LevelHashTableBuilder::Finish() {
   if (!status_.ok()) return status_;
 
@@ -160,8 +163,6 @@ uint64_t LevelHashTableBuilder::FileSize() const {
 bool LevelHashTableBuilder::IsEmpty() const { return num_entries_ == 0; }
 
 Status LevelHashTableBuilder::status() const { return status_; }
-
-// --- 实现虚函数 ---
 
 IOStatus LevelHashTableBuilder::io_status() const {
   return io_status_;
@@ -271,15 +272,12 @@ Status LevelHashTableReader::LoadIndex() {
 // 解析长度前缀的 Slice
 const char* ReadLengthPrefixedSlice(const char* p, const char* limit, Slice* result) {
   uint32_t len = 0;
-  // 使用 coding.h 中的 GetVarint32Ptr
   p = GetVarint32Ptr(p, limit, &len); 
   if (p == nullptr) return nullptr;
   if (p + len > limit) return nullptr;
   *result = Slice(p, len);
   return p + len;
 }
-
-
 
 Status LevelHashTableReader::Get(const ReadOptions& /*read_options*/,
                                  const Slice& key,
@@ -344,13 +342,9 @@ Status LevelHashTableReader::Get(const ReadOptions& /*read_options*/,
     // 返回 true 意味着虽然 Key 匹配，但可能是一个 Merge 操作，需要继续找更旧的版本
     // TODO: jinyibuqueren
     bool keep_searching = get_context->SaveValue(parsed_key, entry_value_slice, &matched, &read_status, nullptr);
-
     if (!read_status.ok()) {
         return read_status;
     }
-
-    //  false 表示找到了结果（或者确定不存在），应停止搜索
-    //  true 表示需要继续搜索（例如 Key 不匹配，或者只是合并了部分值）
     if (!keep_searching) {
         return Status::OK();
     }

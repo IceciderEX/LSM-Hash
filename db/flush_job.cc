@@ -862,8 +862,9 @@ Status FlushJob::WriteLevel0Table() {
   InternalStats::CompactionStats flush_stats(CompactionReason::kFlush, 1 /* count**/);
 
   // for levelhash
-  // 代替原先的 WriteLevel0Table（要求有序逻辑）
+  // 代替原先的 WriteLevel0Table（ordered logic）
   if (strcmp(mutable_cf_options_.table_factory->Name(), "LevelHashTableFactory") == 0) {
+      // TODO：检查各个 STATS 是否正确
       uint64_t total_num_entries = 0;
       uint64_t total_data_size = 0;
       for (const auto* m : mems_) {
@@ -877,7 +878,7 @@ Status FlushJob::WriteLevel0Table() {
                            << "total_data_size" << total_data_size
                            << "flush_reason" << GetFlushReasonString(flush_reason_);
 
-      // 2 meta
+      // meta info
       int64_t _current_time = 0;
       clock_->GetCurrentTime(&_current_time);
       const uint64_t current_time = static_cast<uint64_t>(_current_time);

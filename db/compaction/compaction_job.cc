@@ -1007,193 +1007,20 @@ inline uint64_t ReverseBits64(uint64_t x) {
 
 inline uint32_t GetBucketIndex(uint64_t hash, uint32_t G) {
   if (G == 0) return 0;
-  // 1. 翻转所有位
   uint64_t reversed = ReverseBits64(hash);
-  // 2. 将翻转后的高 G 位移到低位作为索引
   return static_cast<uint32_t>(reversed >> (64 - G));
 }
 
-// NOTE: NOT DONE (L0 -> L1)
-Status CompactionJob::RunLevelHashCompaction(uint32_t target_bucket_id) {
-  AutoThreadOperationStageUpdater stage_updater(ThreadStatus::STAGE_COMPACTION_RUN);
-  
-  const uint64_t start_micros = db_options_.clock->NowMicros();
-  Status s;
-
-  // 1. Prepare Environment
-  Compaction* compaction = compact_->compaction;
-  ColumnFamilyData* cfd = compaction->column_family_data();
-  const auto& mutable_cf_options = compaction->mutable_cf_options();
-  const auto& ioptions = compaction->immutable_options();
-  const Comparator* user_cmp = cfd->user_comparator();
-  const InternalKeyComparator& icmp = cfd->internal_comparator();
-  
-  // L0 G value (Assume 3 for now, or retrieve from logic)
-  uint32_t initial_g = 3;
-  uint32_t input_g = initial_g;
-
-  // Deduplication Map: Key -> Value
-  // UserKey -> ParsedInternalKey (seqno 最大？)
-  struct KeyVersion {
-    std::string internal_key;  
-    std::string value;        
-    SequenceNumber seq;
-  };
-  std::unordered_map<std::string, KeyVersion> dedupe_map;
-
-  // 2. Read L0 Input Files (Gathering)
-  const auto* level_files = compaction->inputs(0);
-  
-  for (size_t i = 0; i < level_files->size(); ++i) {
-    FileMetaData* f = (*level_files)[i];
-    
-    // Construct Reader Iterator
-    ReadOptions read_options;
-    read_options.verify_checksums = true;
-    read_options.fill_cache = false;
- 
-    std::unique_ptr<InternalIterator> iter(cfd->table_cache()->NewIterator(
-        read_options, file_options_, cfd->internal_comparator(),
-        *f, nullptr /* range_del */, mutable_cf_options, 
-        nullptr /* table_reader_ptr */, nullptr /* file_read_hist */, 
-        TableReaderCaller::kCompaction,/*arena=*/nullptr,
-        /*skip_filter=*/false, 0, 0,
-        /*smallest_compaction_key=*/nullptr,
-        /*largest_compaction_key*/ nullptr,
-        /*allow_unprepared_value*/ false
-    ));
-    if (!iter->status().ok()) {
-      return iter->status();
-    }
-    // Traverse the file
-    for (iter->SeekToFirst(); iter->Valid(); iter->Next()) {
-      Slice key_slice = iter->key();
-      Slice val_slice = iter->value();
-      
-      ParsedInternalKey parsed_key;
-      if (!ParseInternalKey(key_slice, &parsed_key, false).ok()) continue;
-
-      uint64_t hash = MurmurHash64A(parsed_key.user_key.data(), 
-                                 static_cast<int>(parsed_key.user_key.size()), 0);
-      uint32_t b_idx = GetBucketIndex(hash, input_g);
-      // NOTE: Currently Assume L0 G=3
-      uint32_t file_g = 3; 
-      
-      if (b_idx == target_bucket_id) {
-        // 命中 Target Bucket，进行去重逻辑
-         std::string user_key_str = parsed_key.user_key.ToString();
-         
-         auto it = dedupe_map.find(user_key_str);
-         if (it == dedupe_map.end()) {
-             KeyVersion kv;
-             kv.internal_key = key_slice.ToString();
-             kv.value = val_slice.ToString();
-             kv.seq = parsed_key.sequence;
-             dedupe_map.emplace(user_key_str, std::move(kv));
-         } else {
-             // look seqno
-             if (parsed_key.sequence > it->second.seq) {
-                 it->second.internal_key = key_slice.ToString();
-                 it->second.value = val_slice.ToString();
-                 it->second.seq = parsed_key.sequence;
-             }
-         }
-      }
-    }
-  }
-
-  // 3. Splitting & Writing
-  std::unique_ptr<WritableFileWriter> file_writer;
-  uint64_t file_number = versions_->NewFileNumber();
-  std::string fname = TableFileName(ioptions.cf_paths, file_number, compaction->output_path_id());
-  
-  {
-      std::unique_ptr<FSWritableFile> writable_file;
-      s = NewWritableFile(fs_.get(), fname, &writable_file, file_options_);
-      if (!s.ok()) return s;
-      file_writer.reset(new WritableFileWriter(std::move(writable_file), fname, file_options_, db_options_.clock, io_tracer_, db_options_.stats, Histograms::SST_WRITE_MICROS));
-  }
-
-  // FIX 2: Match TableBuilderOptions constructor signature exactly
-  TableBuilderOptions tb_options(
-      ioptions, 
-      mutable_cf_options, 
-      ReadOptions(), 
-      WriteOptions(), 
-      cfd->internal_comparator(), 
-      cfd->internal_tbl_prop_coll_factories(), 
-      compaction->output_compression(), 
-      compaction->output_compression_opts(), 
-      cfd->GetID(), 
-      cfd->GetName(), 
-      1, /* level */
-      0, /* newest_key_time (unknown) */
-      false, /* is_bottommost */
-      TableFileCreationReason::kCompaction, /* reason */
-      0, /* oldest_key_time */
-      0, /* file_creation_time */
-      db_id_, 
-      db_session_id_,
-      0, /* target_file_size */
-      file_number /* cur_file_num */
-  );
-  
-  std::unique_ptr<TableBuilder> builder(
-      new LevelHashTableBuilder(tb_options, file_writer.get(), 3 /* initial_g */)
-  );
-
-  // Write to Builder
-  InternalKey smallest, largest;
-  bool first_key = true;
-
-  for (const auto& kv_pair : dedupe_map) {
-    const KeyVersion& kv = kv_pair.second;
-    builder->Add(kv.internal_key, kv.value);
-    
-    // Track boundaries for FileMetaData
-    InternalKey current_ikey;
-    current_ikey.DecodeFrom(kv.internal_key);
-    if (first_key) {
-        smallest = current_ikey;
-        largest = current_ikey;
-        first_key = false;
-    } else {
-        if (icmp.Compare(current_ikey, smallest) < 0) smallest = current_ikey;
-        if (icmp.Compare(current_ikey, largest) > 0) largest = current_ikey;
-    }
-  }
-
-  s = builder->Finish();
-  if (!s.ok()) return s;
-  
-  uint64_t file_size = builder->FileSize();
- 
-  FileMetaData meta;
-  meta.fd = FileDescriptor(file_number, compaction->output_path_id(), file_size);
-  meta.smallest = smallest;
-  meta.largest = largest;
-  meta.fd.smallest_seqno = 0; 
-  meta.fd.largest_seqno = kMaxSequenceNumber; // correct?
-  meta.marked_for_compaction = false;
-  meta.file_checksum = builder->GetFileChecksum();
-  meta.file_checksum_func_name = builder->GetFileChecksumFuncName();
-  
-  // If LevelHashTableBuilder provides a valid_bucket_bitmap accessor, use it here
-  // meta.valid_bucket_bitmap = ...
-  auto* hash_builder = dynamic_cast<LevelHashTableBuilder*>(builder.get());
-  if (hash_builder) {
-      meta.valid_bucket_bitmap = hash_builder->GetValidBucketBitmap();
-  }
-  VersionEdit* edit = compaction->edit();
-  edit->AddFile(1, meta);
-  
-  return Status::OK();
-}
+// ----------------- LEVELHASH ------------------
 
 Status CompactionJob::Run() {
+  // for levelhash
   if (compact_->compaction->HasTargetBucket()) {
       uint32_t bucket_id = compact_->compaction->GetTargetBucketId();
-      // --> 进入 Level-Hash 专用的 Compaction 逻辑
+
+      InitializeLevelHashCompactionRun(bucket_id);
+
+
       return RunLevelHashCompaction(bucket_id); 
   }
 
@@ -1236,6 +1063,238 @@ Status CompactionJob::Run() {
                         num_input_range_del);
 
   return status;
+}
+
+void CompactionJob::InitializeLevelHashCompactionRun(uint32_t target_bucket_id) {
+  // 1. 更新线程状态
+  // 这使得 'SHOW ENGINE ROCKSDB STATUS' 或后台监控能看到当前线程处于 COMPACTION_RUN 阶段
+  // AutoThreadOperationStageUpdater 会在函数结束析构时自动更新状态，但这里我们需要显式设置，
+  // 因为 RunLevelHashCompaction 是一个长运行函数。
+  ThreadStatusUtil::SetThreadOperation(ThreadStatus::OP_COMPACTION);
+  
+  // 2. 刷新日志缓冲区
+  // 将 Pick 阶段可能积攒的日志刷入文件，确保崩溃时能看到之前的决策信息
+  if (log_buffer_) {
+    log_buffer_->FlushBufferToLog();
+  }
+
+  // 3. 复用原生的 LogCompaction
+  // 这会打印标准的 "[default] [JOB 12] Compacting 4@0 + 0@1 files to L1..." 摘要
+  LogCompaction();
+
+  // 4. [Level-Hash 特有] 打印详细的 Bucket 和 G 值流转信息
+  Compaction* c = compact_->compaction;
+  ColumnFamilyData* cfd = c->column_family_data();
+  
+  // TODO: 从 VersionStorageInfo 或配置中获取 kInitialG
+  const uint32_t kInitialG = 3; 
+  int input_level = c->start_level();
+  int output_level = c->output_level();
+  
+  uint32_t input_g = kInitialG + input_level;
+  uint32_t output_g = kInitialG + output_level;
+
+  ROCKS_LOG_INFO(db_options_.info_log, 
+      "[%s] [JOB %d] LevelHash Topology: Level %d (Bucket %u, G=%u) -> Level %d (G=%u). "
+      "Splitting Rule: Hash >> (64-%u) -> Hash >> (64-%u)", 
+      cfd->GetName().c_str(), 
+      job_id_, 
+      input_level, 
+      target_bucket_id, 
+      input_g, 
+      output_level, 
+      output_g,
+      input_g,
+      output_g);
+      
+  // 5. 记录开始时间点 (用于后续计算 CPU/Micros 耗时)
+  // 注意：虽然 Run() 里也获取了时间，但这里留个记录点也是好的编程习惯
+  TEST_SYNC_POINT("CompactionJob::InitializeLevelHashCompactionRun:Start");
+}
+
+// NOTE: NOT DONE
+// Ln -> Ln+1 vertical buckets merge
+Status CompactionJob::RunLevelHashCompaction(uint32_t target_bucket_id) {
+  AutoThreadOperationStageUpdater stage_updater(ThreadStatus::STAGE_COMPACTION_RUN);
+  
+  const uint64_t start_micros = db_options_.clock->NowMicros();
+  Status s;
+
+  // 1. Prepare Environment
+  Compaction* compaction = compact_->compaction;
+  ColumnFamilyData* cfd = compaction->column_family_data();
+  const auto& mutable_cf_options = compaction->mutable_cf_options();
+  const auto& ioptions = compaction->immutable_options();
+  const Comparator* user_cmp = cfd->user_comparator();
+  const InternalKeyComparator& icmp = cfd->internal_comparator();
+  
+  // L0 G value and IO LEVEL
+  // TODO: 从某个 options 中获取
+  const uint32_t kInitialG = 3; 
+  int input_level = compaction->start_level();
+  int output_level = compaction->output_level();
+
+  // Ln's G value
+  uint32_t input_g = kInitialG + input_level;
+  // logging
+  ROCKS_LOG_INFO(db_options_.info_log, 
+      "[%s] [JOB %d] LevelHash Compaction Start: Level %d (Bucket %u) -> Level %d. G: %u -> %u", 
+      cfd->GetName().c_str(), job_id_, input_level, target_bucket_id, output_level, input_g, input_g + 1);
+  // 需要进行去重，先在内存中完成
+  // UserKey -> ParsedInternalKey (seqno 最大？)
+  struct KeyVersion {
+    std::string internal_key;  
+    std::string value;        
+    SequenceNumber seq;
+  };
+  std::unordered_map<std::string, KeyVersion> dedupe_map;
+
+  // 2. Read L0 Input Files (Gathering)
+  const auto* level_files = compaction->inputs(0);
+  
+  for (size_t i = 0; i < level_files->size(); ++i) {
+    FileMetaData* f = (*level_files)[i];
+    
+    // Reader Iterator
+    ReadOptions read_options;
+    read_options.verify_checksums = true;
+    read_options.fill_cache = false;
+ 
+    std::unique_ptr<InternalIterator> iter(cfd->table_cache()->NewIterator(
+        read_options, file_options_, cfd->internal_comparator(),
+        *f, nullptr /* range_del */, mutable_cf_options, 
+        nullptr /* table_reader_ptr */, nullptr /* file_read_hist */, 
+        TableReaderCaller::kCompaction,/*arena=*/nullptr,
+        /*skip_filter=*/false, 
+        input_level, // input_level
+        0,
+        /*smallest_compaction_key=*/nullptr,
+        /*largest_compaction_key*/ nullptr,
+        /*allow_unprepared_value*/ false
+    ));
+    if (!iter->status().ok()) {
+      return iter->status();
+    }
+    // Traverse the KVs
+    for (iter->SeekToFirst(); iter->Valid(); iter->Next()) {
+      Slice key_slice = iter->key();
+      Slice val_slice = iter->value();
+      
+      ParsedInternalKey parsed_key;
+      if (!ParseInternalKey(key_slice, &parsed_key, false).ok()) continue;
+
+      uint64_t hash = MurmurHash64A(parsed_key.user_key.data(), 
+                                 static_cast<int>(parsed_key.user_key.size()), 0);
+      uint32_t b_idx = GetBucketIndex(hash, input_g);
+      
+      // filter target_bucket data
+      if (b_idx == target_bucket_id) {
+         std::string user_key_str = parsed_key.user_key.ToString();
+         
+         auto it = dedupe_map.find(user_key_str);
+         if (it == dedupe_map.end()) {
+             KeyVersion kv;
+             kv.internal_key = key_slice.ToString();
+             kv.value = val_slice.ToString();
+             kv.seq = parsed_key.sequence;
+             dedupe_map.emplace(user_key_str, std::move(kv));
+         } else {
+             // look seqno
+             if (parsed_key.sequence > it->second.seq) {
+                 it->second.internal_key = key_slice.ToString();
+                 it->second.value = val_slice.ToString();
+                 it->second.seq = parsed_key.sequence;
+             }
+         }
+      }
+    }
+  }
+
+  // 3. Splitting & Writing sst
+  std::unique_ptr<WritableFileWriter> file_writer;
+  uint64_t file_number = versions_->NewFileNumber();
+  std::string fname = TableFileName(ioptions.cf_paths, file_number, compaction->output_path_id());
+  
+  {
+      std::unique_ptr<FSWritableFile> writable_file;
+      s = NewWritableFile(fs_.get(), fname, &writable_file, file_options_);
+      if (!s.ok()) return s;
+      file_writer.reset(new WritableFileWriter(std::move(writable_file), fname, file_options_, db_options_.clock, io_tracer_, db_options_.stats, Histograms::SST_WRITE_MICROS));
+  }
+  // TODO：传入参数的正确性？
+  TableBuilderOptions tb_options(
+      ioptions, 
+      mutable_cf_options, 
+      ReadOptions(), 
+      WriteOptions(), 
+      cfd->internal_comparator(), 
+      cfd->internal_tbl_prop_coll_factories(), 
+      compaction->output_compression(), 
+      compaction->output_compression_opts(), 
+      cfd->GetID(), 
+      cfd->GetName(), 
+      output_level, /* level */
+      0, /* newest_key_time (unknown) */
+      false, /* is_bottommost */
+      TableFileCreationReason::kCompaction, /* reason */
+      0, /* oldest_key_time */
+      0, /* file_creation_time */
+      db_id_, 
+      db_session_id_,
+      0, /* target_file_size */
+      file_number /* cur_file_num */
+  );
+  
+  // LevelHashTableBuilder 
+  std::unique_ptr<TableBuilder> builder(
+      new LevelHashTableBuilder(tb_options, file_writer.get(), kInitialG)
+  );
+  InternalKey smallest, largest;
+  bool first_key = true;
+  for (const auto& kv_pair : dedupe_map) {
+    const KeyVersion& kv = kv_pair.second;
+    builder->Add(kv.internal_key, kv.value);
+    
+    // FileMetaData bound
+    InternalKey current_ikey;
+    current_ikey.DecodeFrom(kv.internal_key);
+    if (first_key) {
+        smallest = current_ikey;
+        largest = current_ikey;
+        first_key = false;
+    } else {
+        if (icmp.Compare(current_ikey, smallest) < 0) smallest = current_ikey;
+        if (icmp.Compare(current_ikey, largest) > 0) largest = current_ikey;
+    }
+  }
+  // build sst file
+  s = builder->Finish();
+  if (!s.ok()) return s;
+  
+  uint64_t file_size = builder->FileSize();
+ 
+  FileMetaData meta;
+  meta.fd = FileDescriptor(file_number, compaction->output_path_id(), file_size);
+  meta.smallest = smallest;
+  meta.largest = largest;
+  meta.fd.smallest_seqno = 0; 
+  meta.fd.largest_seqno = kMaxSequenceNumber; // correct?
+  meta.marked_for_compaction = false;
+  meta.file_checksum = builder->GetFileChecksum();
+  meta.file_checksum_func_name = builder->GetFileChecksumFuncName();
+
+  auto* hash_builder = dynamic_cast<LevelHashTableBuilder*>(builder.get());
+  if (hash_builder) {
+      meta.valid_bucket_bitmap = hash_builder->GetValidBucketBitmap();
+  }
+  VersionEdit* edit = compaction->edit();
+  edit->AddFile(output_level, meta);
+
+  ROCKS_LOG_INFO(db_options_.info_log, 
+      "[%s] [JOB %d] LevelHash Compaction Output: Level %d, FileSize %" PRIu64, 
+      cfd->GetName().c_str(), job_id_, output_level, file_size);
+  
+  return Status::OK();
 }
 
 Status CompactionJob::Install(bool* compaction_released) {

@@ -560,6 +560,8 @@ class CompactionJob {
 
   // for levelhash
   Status RunLevelHashCompaction(uint32_t target_bucket_id);
+
+  void InitializeLevelHashCompactionRun(uint32_t target_bucket_id);
 };
 
 // CompactionServiceInput is used the pass compaction information between two
