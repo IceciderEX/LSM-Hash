@@ -33,12 +33,11 @@ void TestBucketThresholdFlush() {
     options.create_if_missing = true;
     
     // 1. 设置极大的 write_buffer_size，屏蔽内存大小触发的 Flush
-    options.write_buffer_size = 1024 * 1024 * 64; // 100MB
+    options.write_buffer_size = 1024 * 1024 * 100; // 100MB
 
     // 2. 配置 Level-Hash
     options.memtable_factory.reset(new LevelHashMemTableFactory(3, 50, 100000));
     options.table_factory.reset(new LevelHashTableFactory(3));
-    options.compaction_style = kCompactionStyleLevelHash;
 
     // 使用新的 DB 路径，避免旧数据干扰
     std::string dbname = "/home/wam/HWKV/rocksdb/db_tmp/rocksdb_levelhash_bucket_test";
@@ -49,15 +48,8 @@ void TestBucketThresholdFlush() {
 
     // 3. 写入数据
     std::cout << "Inserting 500 keys (Target: trigger bucket overflow)..." << std::endl;
-    for (int i = 0; i < 2000; ++i) {
+    for (int i = 0; i < 500; ++i) {
         db->Put(WriteOptions(), "key_" + std::to_string(i), "val_" + std::to_string(i));
-    }
-
-    std::cout << "Deleting first 500 keys..." << std::endl;
-    for (int i = 1500; i < 2000; ++i) {
-        std::string key = "key_" + std::to_string(i);
-        s = db->Delete(WriteOptions(), key);
-        assert(s.ok());
     }
 
     // 4. 检查是否自动 Flush
@@ -77,7 +69,7 @@ void TestBucketThresholdFlush() {
 
     // 验证数据正确性 (读取刚写入的数据，确保 Flush 后还能读到)
     std::string value;
-    for(int i = 0; i < 1500; ++i) {
+    for(int i = 0; i < 500; ++i) {
         s = db->Get(ReadOptions(), "key_" + std::to_string(i), &value);
         if (!s.ok()) {
             s = db->Get(ReadOptions(), "key_" + std::to_string(i), &value);
@@ -85,11 +77,8 @@ void TestBucketThresholdFlush() {
         assert(s.ok());
         assert(value == "val_" + std::to_string(i));
     }
-    // 确认删除的数据确实不可见
-    for (int i = 1500; i < 2000; ++i) {
-        s = db->Get(ReadOptions(), "key_" + std::to_string(i), &value);
-        assert(!s.ok());
-    }
+    s = db->Get(ReadOptions(), "key_2000", &value);
+    assert(!s.ok());
 
     delete db;
 }

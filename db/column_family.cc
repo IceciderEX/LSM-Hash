@@ -670,7 +670,7 @@ ColumnFamilyData::ColumnFamilyData(
       compaction_picker_.reset(
           new UniversalCompactionPicker(ioptions_, &internal_comparator_));
     // for levelhash
-    } else if (ioptions_.compaction_style == kCompactionStyleHash) {
+    } else if (ioptions_.compaction_style == kCompactionStyleLevelHash) {
       compaction_picker_.reset(
           new LevelHashCompactionPicker(ioptions_, &internal_comparator_));
     } else if (ioptions_.compaction_style == kCompactionStyleFIFO) {

@@ -49,7 +49,7 @@
 
 #include "table/level_hash/level_hash_table.h"
 #include "file/writable_file_writer.h"
-#include "file/read_write_util.cc"
+#include "file/read_write_util.h"
 
 namespace ROCKSDB_NAMESPACE {
 

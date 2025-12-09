@@ -97,6 +97,7 @@ Status LevelHashTableBuilder::Finish() {
 
   // --- 阶段 1: 写入 Data Blocks ---
   for (uint32_t i = 0; i < num_buckets_; ++i) {
+    std::reverse(buffer_[i].begin(), buffer_[i].end());
     bucket_offsets[i] = file_->GetFileSize();
     
     const auto& bucket_data = buffer_[i];

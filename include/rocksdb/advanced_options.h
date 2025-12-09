@@ -30,10 +30,11 @@ enum CompactionStyle : char {
   kCompactionStyleUniversal = 0x1,
   // FIFO compaction style
   kCompactionStyleFIFO = 0x2,
+  // for levelhash
+  kCompactionStyleLevelHash = 0x3,
   // Disable background compaction. Compaction jobs are submitted
   // via CompactFiles().
-  kCompactionStyleNone = 0x3,
-  kCompactionStyleHash = 0x4,
+  kCompactionStyleNone = 0x4,
 };
 
 // In Level-based compaction, it Determines which file from a level to be
@@ -137,8 +138,11 @@ struct CompactionOptionsFIFO {
   bool operator==(const CompactionOptionsFIFO& rhs) const = default;
 };
 
-struct CompactionOptionsHash {
-  bool operator==(const CompactionOptionsHash& rhs) const = default;
+// for levelhash
+struct CompactionOptionsLevelHash {
+  int l0_trigger_threshold = 2;
+
+  bool operator==(const CompactionOptionsLevelHash& rhs) const = default;
 };
 
 // The control option of how the cache tiers will be used. Currently rocksdb
@@ -690,7 +694,7 @@ struct AdvancedColumnFamilyOptions {
   CompactionOptionsFIFO compaction_options_fifo;
   
   // for levelhash  
-  CompactionOptionsHash compaction_options_hash;
+  CompactionOptionsLevelHash compaction_options_level_hash;
 
   // An iteration->Next() sequentially skips over keys with the same
   // user-key unless this option is set. This number specifies the number

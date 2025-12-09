@@ -562,6 +562,30 @@ class CompactionJob {
   Status RunLevelHashCompaction(uint32_t target_bucket_id);
 
   void InitializeLevelHashCompactionRun(uint32_t target_bucket_id);
+
+    Status ProcessLevelHashData(
+      uint32_t target_bucket_id, 
+      uint32_t input_g, 
+      uint32_t initial_g,
+      FileMetaData* output_file_meta,
+      InternalStats::CompactionStats* compaction_stats,
+      std::shared_ptr<TableProperties>* table_properties);
+    
+  void UpdateLevelHashTimingStats(uint64_t start_micros, uint64_t start_cpu_micros);
+
+  Status SyncLevelHashOutputDirectory();
+
+  Status VerifyLevelHashOutputFile(const FileMetaData& output_file_meta);
+      
+  void SetLevelHashOutputTableProperties(
+      const std::string& output_fname, 
+      const std::shared_ptr<TableProperties>& tp);
+
+  void UpdateLevelHashInternalStats(const InternalStats::CompactionStats& io_stats);
+
+  void VerifyAndFinalizeLevelHashRun(
+      Status status, 
+      const InternalStats::CompactionStats& stats);
 };
 
 // CompactionServiceInput is used the pass compaction information between two
