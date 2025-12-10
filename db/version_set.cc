@@ -78,6 +78,7 @@
 #include "util/stop_watch.h"
 #include "util/string_util.h"
 #include "util/user_comparator_wrapper.h"
+#include "util/murmurhash.h"
 
 // Generate the regular and coroutine versions of some methods by
 // including version_set_sync_and_async.h twice
@@ -150,7 +151,7 @@ class FilePicker {
   FilePicker(const Slice& user_key, const Slice& ikey,
              autovector<LevelFilesBrief>* file_levels, unsigned int num_levels,
              FileIndexer* file_indexer, const Comparator* user_comparator,
-             const InternalKeyComparator* internal_comparator)
+             const InternalKeyComparator* internal_comparator, bool is_level_hash)
       : num_levels_(num_levels),
         curr_level_(static_cast<unsigned int>(-1)),
         returned_file_level_(static_cast<unsigned int>(-1)),
@@ -164,7 +165,9 @@ class FilePicker {
         ikey_(ikey),
         file_indexer_(file_indexer),
         user_comparator_(user_comparator),
-        internal_comparator_(internal_comparator) {
+        internal_comparator_(internal_comparator),
+        // for_levelhash
+        is_level_hash_(is_level_hash) {
     // Setup member variables to search first level.
     search_ended_ = !PrepareNextLevel();
     if (!search_ended_) {
@@ -275,6 +278,8 @@ class FilePicker {
   FileIndexer* file_indexer_;
   const Comparator* user_comparator_;
   const InternalKeyComparator* internal_comparator_;
+  // for levelhash
+  bool is_level_hash_;
 
   // Setup local variables to search next level.
   // Returns false if there are no more levels to search.
@@ -302,8 +307,10 @@ class FilePicker {
       // newest to oldest. In the context of merge-operator, this can occur at
       // any level. Otherwise, it only occurs at Level-0 (since Put/Deletes
       // are always compacted into a single entry).
+
+      // for levelhash, all levels are non-sorted
       int32_t start_index;
-      if (curr_level_ == 0) {
+      if (curr_level_ == 0 || is_level_hash_) {
         // On Level-0, we read through all files to check for overlap.
         start_index = 0;
       } else {
@@ -2688,6 +2695,22 @@ void Version::MultiGetBlob(
   }
 }
 
+// for levelhash
+static inline uint64_t ReverseBits64_Internal(uint64_t x) {
+  x = ((x & 0x5555555555555555ULL) << 1) | ((x & 0xAAAAAAAAAAAAAAAAULL) >> 1);
+  x = ((x & 0x3333333333333333ULL) << 2) | ((x & 0xCCCCCCCCCCCCCCCCULL) >> 2);
+  x = ((x & 0x0F0F0F0F0F0F0F0FULL) << 4) | ((x & 0xF0F0F0F0F0F0F0F0ULL) >> 4);
+  x = ((x & 0x00FF00FF00FF00FFULL) << 8) | ((x & 0xFF00FF00FF00FF00ULL) >> 8);
+  x = ((x & 0x0000FFFF0000FFFFULL) << 16) | ((x & 0xFFFF0000FFFF0000ULL) >> 16);
+  return (x << 32) | (x >> 32);
+}
+
+static inline uint32_t GetBucketIndex_Internal(uint64_t hash, uint32_t G) {
+  if (G == 0) return 0;
+  uint64_t reversed = ReverseBits64_Internal(hash);
+  return static_cast<uint32_t>(reversed >> (64 - G));
+}
+
 void Version::Get(const ReadOptions& read_options, const LookupKey& k,
                   PinnableSlice* value, PinnableWideColumns* columns,
                   std::string* timestamp, Status* status,
@@ -2734,10 +2757,21 @@ void Version::Get(const ReadOptions& read_options, const LookupKey& k,
     pinned_iters_mgr->StartPinning();
   }
 
+  // for levelhash
+  // 如果是 levelhash，file 选择逻辑需要改变
+  bool is_level_hash = false;
+  if (cfd_) {
+      const auto& options = cfd_->GetLatestMutableCFOptions();
+      if (options.table_factory && 
+          strcmp(options.table_factory->Name(), "LevelHashTableFactory") == 0) {
+          is_level_hash = true;
+      }
+  }
+
   FilePicker fp(user_key, ikey, &storage_info_.level_files_brief_,
                 storage_info_.num_non_empty_levels_,
                 &storage_info_.file_indexer_, user_comparator(),
-                internal_comparator());
+                internal_comparator(), is_level_hash);
   FdWithKeyRange* f = fp.GetNextFile();
 
   while (f != nullptr) {
@@ -2748,6 +2782,34 @@ void Version::Get(const ReadOptions& read_options, const LookupKey& k,
     }
     if (get_context.sample()) {
       sample_file_read_inc(f->file_metadata);
+    }
+
+    // for levelhash
+    // 检查 bucket bitmap
+    const auto& bitmap = f->file_metadata->valid_bucket_bitmap;
+    if (!bitmap.empty()) {
+        // 1. 计算 Hash (no Timestamp user_key)
+        uint64_t hash = MurmurHash64A(user_key.data(), user_key.size(), 0);
+
+        const uint32_t kInitialG = 3; // TODO: 从配置读取
+        int level = fp.GetHitFileLevel(); // 获取当前文件所在的层级
+        uint32_t G = kInitialG + level;
+        uint32_t bucket_idx = GetBucketIndex_Internal(hash, G);
+
+        size_t word_idx = bucket_idx / 64;
+        size_t bit_idx = bucket_idx % 64;
+        bool bucket_exists = false;
+        if (word_idx < bitmap.size()) {
+            if ((bitmap[word_idx] & (1ULL << bit_idx)) != 0) {
+                bucket_exists = true;
+            }
+        }
+
+        // 该 Bucket 不存在，则直接跳过此文件
+        if (!bucket_exists) {
+            f = fp.GetNextFile();
+            continue; 
+        }
     }
 
     bool timer_enabled =

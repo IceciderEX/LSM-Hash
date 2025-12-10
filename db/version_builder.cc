@@ -604,8 +604,18 @@ class VersionBuilder::Rep {
             return Status::Corruption("VersionBuilder", oss.str());
           }
 
+          // for levelhash
+          bool is_level_hash = false;
+          if (cfd_) {
+              const auto& mutable_opts = cfd_->GetLatestMutableCFOptions();
+              if (mutable_opts.table_factory && 
+                  strcmp(mutable_opts.table_factory->Name(), "LevelHashTableFactory") == 0) {
+                  is_level_hash = true;
+              }
+          }
+
           // Make sure there is no overlap in level
-          if (icmp->Compare(lhs->largest, rhs->smallest) >= 0) {
+          if (!is_level_hash && icmp->Compare(lhs->largest, rhs->smallest) >= 0) {
             std::ostringstream oss;
             oss << 'L' << level << " has overlapping ranges: file #"
                 << lhs->fd.GetNumber()
@@ -1045,30 +1055,39 @@ class VersionBuilder::Rep {
 
   // for levelhash
   FileMetaData* FindFileMetaData(int level, uint64_t file_number) {
-      // 先看 added_files (当前变更)
-      auto& added = levels_[level].added_files;
-      auto it = added.find(file_number);
-      if (it != added.end()) return it->second;
-
-      // 再看 base_vstorage_ (基准版本)
-      if (levels_[level].deleted_files.count(file_number)) return nullptr;
-      return base_vstorage_->GetFileMetaDataByNumber(file_number); 
+    if (level >= num_levels_) {
+      return nullptr;
+    }
+    const auto& level_state = levels_[level];
+    // 1. 当前 Edit 过程
+    auto add_it = level_state.added_files.find(file_number);
+    if (add_it != level_state.added_files.end()) {
+      return add_it->second;
+    }
+    // 2. 检查是否已被标记为物理删除
+    if (level_state.deleted_files.count(file_number) > 0) {
+      return nullptr;
+    }
+    // 3. 最后从 Base Version 中查找
+    return base_vstorage_->GetFileMetaDataByNumber(file_number);
   }
   
   Status ApplyBucketDeletion(int level, uint64_t file_number, uint32_t bucket_id) {
-    // 找到对应的 FileMetaData
-    FileMetaData* f = FindFileMetaData(level, file_number); 
-        return Status::OK();
+    // 1. 找到文件元数据
+    FileMetaData* f = FindFileMetaData(level, file_number);
+    if (!f) {
+      // 文件可能已经被物理删除，或者不存在，直接忽略
+      return Status::OK();
     }
     
-    if (levels_[level].added_files.find(file_number) == levels_[level].added_files.end()) {
-        // 克隆并接管
-        FileMetaData* f_copy = new FileMetaData(*f);
-        f_copy->refs = 1;
-        levels_[level].added_files.emplace(file_number, f_copy);
-        f = f_copy;
-    } else {
-        f = levels_[level].added_files[file_number];
+    auto& level_state = levels_[level];
+    // clone-on-write
+    if (level_state.added_files.find(file_number) == level_state.added_files.end()) {
+      FileMetaData* f_copy = new FileMetaData(*f);
+      f_copy->refs = 1;
+      // 将副本放入 added_files
+      level_state.added_files.emplace(file_number, f_copy);
+      f = f_copy;
     }
 
     if (f->valid_bucket_bitmap.empty()) {
@@ -1078,6 +1097,8 @@ class VersionBuilder::Rep {
     size_t bit_idx = bucket_id % 64;
     if (word_idx < f->valid_bucket_bitmap.size()) {
         f->valid_bucket_bitmap[word_idx] &= ~(1ULL << bit_idx);
+    } else {
+        return Status::Corruption("ApplyBucketDeletion: Bucket ID out of range");
     }
     // 检查是否所有 Bucket 都无效了
     bool all_empty = true;
@@ -1170,7 +1191,10 @@ class VersionBuilder::Rep {
     // for levelhash
     for (const auto& del : edit->GetBucketDeletions()) {
         Status s = ApplyBucketDeletion(del.level, del.file_number, del.bucket_id);
-        if (!s.ok()) return s;
+        if (!s.ok()) {
+            return s;
+        }
+        version_updated = true; 
     }
     return Status::OK();
   }

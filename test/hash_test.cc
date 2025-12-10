@@ -7,6 +7,7 @@
 #include "rocksdb/options.h"
 #include "memtable/level_hash_memtable.h"
 #include "table/level_hash/level_hash_table.h"
+#include "logging/logging.h"
 
 using namespace ROCKSDB_NAMESPACE;
 
@@ -49,12 +50,15 @@ void TestBucketThresholdFlush() {
 
     // 3. 写入数据
     std::cout << "Inserting 500 keys (Target: trigger bucket overflow)..." << std::endl;
-    for (int i = 0; i < 500; ++i) {
+    for (int i = 0; i < 2000; ++i) {
+        if (i == 1500) {
+            ROCKS_LOG_INFO(db->GetOptions().info_log, "Insert key_1500 to bucket %u", 1500);
+        }
         db->Put(WriteOptions(), "key_" + std::to_string(i), "val_" + std::to_string(i));
     }
 
     std::cout << "Deleting first 500 keys..." << std::endl;
-    for (int i = 0; i < 500; ++i) {
+    for (int i = 0; i < 1500; ++i) {
         std::string key = "key_" + std::to_string(i);
         s = db->Delete(WriteOptions(), key);
         assert(s.ok());
@@ -77,16 +81,16 @@ void TestBucketThresholdFlush() {
 
     // 验证数据正确性 (读取刚写入的数据，确保 Flush 后还能读到)
     std::string value;
-    // for(int i = 0; i < 100; ++i) {
-    //     s = db->Get(ReadOptions(), "key_" + std::to_string(i), &value);
-    //     if (!s.ok()) {
-    //         s = db->Get(ReadOptions(), "key_" + std::to_string(i), &value);
-    //     }
-    //     assert(s.ok());
-    //     assert(value == "val_" + std::to_string(i));
-    // }
+    for(int i = 1500; i < 2000; ++i) {
+        s = db->Get(ReadOptions(), "key_" + std::to_string(i), &value);
+        if (!s.ok()) {
+            s = db->Get(ReadOptions(), "key_" + std::to_string(i), &value);
+        }
+        assert(s.ok());
+        assert(value == "val_" + std::to_string(i));
+    }
     // 确认删除的数据确实不可见
-    for (int i = 0; i < 200; ++i) {
+    for (int i = 100; i < 200; ++i) {
         s = db->Get(ReadOptions(), "key_" + std::to_string(i), &value);
         assert(!s.ok());
     }

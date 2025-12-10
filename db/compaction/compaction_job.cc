@@ -16,6 +16,7 @@
 #include <set>
 #include <utility>
 #include <vector>
+#include <iostream>
 
 #include "db/blob/blob_counting_iterator.h"
 #include "db/blob/blob_file_addition.h"
@@ -1092,15 +1093,18 @@ Status CompactionJob::RunLevelHashCompaction(uint32_t target_bucket_id) {
   // [Stats]
   UpdateLevelHashInternalStats(io_stats);
 
+  // VersionEdit [Logic Deletion]
+  VersionEdit* edit = compact_->compaction->edit();
   // versionedit 的变化记录
   if (output_meta.fd.GetFileSize() > 0) {
-      VersionEdit* edit = compact_->compaction->edit();
       edit->AddFile(compact_->compaction->output_level(), output_meta);
   }
-  
-  // TODO: deleted_files（需要将一个 bucket 作为一个 sst）
-  // compact_->compaction->AddInputDeletions(edit);
-
+  Compaction* c = compact_->compaction;
+  const auto* input_files = c->inputs(0);
+  for (const auto* f : *input_files) {
+      edit->DeleteBucketFromFile(c->level(0), f->fd.GetNumber(), target_bucket_id);
+  }
+  std::cout << edit->DebugString() << std::endl;
   // [Finalize] Log & Event
   VerifyAndFinalizeLevelHashRun(status, io_stats);
 
@@ -1423,8 +1427,7 @@ Status CompactionJob::VerifyLevelHashOutputFile(const FileMetaData& meta) {
     return iter->status();
   }
   // 全量校验
-  for (iter->SeekToFirst(); iter->Valid(); iter->Next()) {
-  }
+  for (iter->SeekToFirst(); iter->Valid(); iter->Next()) {}
   return iter->status();
 }
 
@@ -1439,15 +1442,12 @@ void CompactionJob::SetLevelHashOutputTableProperties(
 // todo：完善
 void CompactionJob::UpdateLevelHashInternalStats(
     const InternalStats::CompactionStats& io_stats) {
-
   // 更新 cf 的统计
   ColumnFamilyData* cfd = compact_->compaction->column_family_data();
   cfd->internal_stats()->AddCompactionStats(
       compact_->compaction->output_level(), 
       thread_pri_, 
       io_stats);
-      
-  //  TODO: deletion 可以在这里一并更新
 }
 
 void CompactionJob::VerifyAndFinalizeLevelHashRun(

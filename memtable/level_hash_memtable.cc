@@ -8,6 +8,7 @@
 #include "db/dbformat.h" 
 #include "memory/arena.h"
 #include "db/lookup_key.h"
+#include "logging/logging.h"
 
 namespace ROCKSDB_NAMESPACE {
 
@@ -82,6 +83,11 @@ void LevelHashMemTable::Insert(KeyHandle handle) {
   uint64_t hash = MurmurHash64A(user_key.data(), user_key.size(), 0);
   // eg. 9539024932675925583 -> bucket 7, G = 3
   uint32_t bucket_idx = GetBucketIndex(hash, G_);
+
+  std::string user_key_str = user_key.ToString();
+  if (user_key_str == "key_1500") {
+    int col = 1;
+  }
 
   // 加锁写入（暂定）
   Bucket* bucket = buckets_[bucket_idx].get();

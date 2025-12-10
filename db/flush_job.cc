@@ -1040,12 +1040,14 @@ Status FlushJob::WriteLevel0Table() {
       const uint64_t cpu_micros = clock_->CPUMicros() - start_cpu_micros;
       flush_stats.micros = micros;
       flush_stats.cpu_micros = cpu_micros;
+      
       ROCKS_LOG_INFO(db_options_.info_log,
                      "[%s] [JOB %d] Level-Hash Flush finished. table #%" PRIu64 
-                     ": %" PRIu64 " bytes %s",
+                     ": %" PRIu32 " bytes %s",
                      cfd_->GetName().c_str(), job_context_->job_id,
-                     meta_.fd.GetNumber(), meta_.fd.GetFileSize(),
+                     meta_.fd.GetNumber(), meta_.fd.GetPathId(), //meta_.fd.GetFileSize(),
                      s.ToString().c_str());
+      
 
       // VersionSet STATS
       cfd_->internal_stats()->AddCompactionStats(0 /* level */, thread_pri_, flush_stats);

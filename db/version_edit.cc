@@ -842,13 +842,13 @@ Status VersionEdit::DecodeFrom(const Slice& src) {
       }
       // for levelhash
       case kDeleteBucketFromFile: {
-        int level;
+        int level_delete_bucket;
         uint64_t file_number;
         uint32_t bucket_id;
-        if (GetLevel(&input, &level, max_level_) &&
+        if (GetLevel(&input, &level_delete_bucket, max_level_) &&
             GetVarint64(&input, &file_number) &&
             GetVarint32(&input, &bucket_id)) {
-          bucket_deletions_.push_back({level, file_number, bucket_id});
+          bucket_deletions_.push_back({level_delete_bucket, file_number, bucket_id});
         } else {
           msg = "[LEVELHASH]: Delete bucket from file";
         }
