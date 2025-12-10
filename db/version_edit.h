@@ -59,6 +59,9 @@ enum Tag : uint32_t {
   kBlobFileAddition = 400,
   kBlobFileGarbage,
 
+  // for levelhash
+  kDeleteBucketFromFile = 500,
+
   // Mask for an unidentified tag from the future which can be safely ignored.
   kTagSafeIgnoreMask = 1 << 13,
 
@@ -989,7 +992,25 @@ class VersionEdit {
   std::string DebugString(bool hex_key = false) const;
   std::string DebugJSON(int edit_num, bool hex_key = false) const;
 
+  // for levelhash
+  void DeleteBucketFromFile(int level, uint64_t file_number, uint32_t bucket_id) {
+    bucket_deletions_.push_back({level, file_number, bucket_id});
+  }
+
+  struct BucketDeletion {
+    int level;
+    uint64_t file_number;
+    uint32_t bucket_id;
+  };
+
+  const std::vector<BucketDeletion>& GetBucketDeletions() const {
+    return bucket_deletions_;
+  }
+
  private:
+  // for levelhash
+  std::vector<BucketDeletion> bucket_deletions_;
+
   // Decode level information from serialized VersionEdit data and and track the
   // maximum level seen.
   //

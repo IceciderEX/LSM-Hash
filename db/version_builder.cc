@@ -1043,6 +1043,56 @@ class VersionBuilder::Rep {
     return Status::OK();
   }
 
+  // for levelhash
+  FileMetaData* FindFileMetaData(int level, uint64_t file_number) {
+      // 先看 added_files (当前变更)
+      auto& added = levels_[level].added_files;
+      auto it = added.find(file_number);
+      if (it != added.end()) return it->second;
+
+      // 再看 base_vstorage_ (基准版本)
+      if (levels_[level].deleted_files.count(file_number)) return nullptr;
+      return base_vstorage_->GetFileMetaDataByNumber(file_number); 
+  }
+  
+  Status ApplyBucketDeletion(int level, uint64_t file_number, uint32_t bucket_id) {
+    // 找到对应的 FileMetaData
+    FileMetaData* f = FindFileMetaData(level, file_number); 
+        return Status::OK();
+    }
+    
+    if (levels_[level].added_files.find(file_number) == levels_[level].added_files.end()) {
+        // 克隆并接管
+        FileMetaData* f_copy = new FileMetaData(*f);
+        f_copy->refs = 1;
+        levels_[level].added_files.emplace(file_number, f_copy);
+        f = f_copy;
+    } else {
+        f = levels_[level].added_files[file_number];
+    }
+
+    if (f->valid_bucket_bitmap.empty()) {
+        return Status::Corruption("ApplyBucketDeletion: File has no bitmap");
+    }
+    size_t word_idx = bucket_id / 64;
+    size_t bit_idx = bucket_id % 64;
+    if (word_idx < f->valid_bucket_bitmap.size()) {
+        f->valid_bucket_bitmap[word_idx] &= ~(1ULL << bit_idx);
+    }
+    // 检查是否所有 Bucket 都无效了
+    bool all_empty = true;
+    for (uint64_t word : f->valid_bucket_bitmap) {
+        if (word != 0) {
+            all_empty = false;
+            break;
+        }
+    }
+    if (all_empty) {
+        return ApplyFileDeletion(level, file_number);
+    }
+    return Status::OK();
+  }
+
   // Apply all of the edits in *edit to the current state.
   Status Apply(const VersionEdit* edit) {
     bool version_updated = false;
@@ -1115,6 +1165,12 @@ class VersionBuilder::Rep {
       if (!edited_in_atomic_group_ && edit->IsInAtomicGroup()) {
         edited_in_atomic_group_ = true;
       }
+    }
+
+    // for levelhash
+    for (const auto& del : edit->GetBucketDeletions()) {
+        Status s = ApplyBucketDeletion(del.level, del.file_number, del.bucket_id);
+        if (!s.ok()) return s;
     }
     return Status::OK();
   }

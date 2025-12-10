@@ -182,6 +182,14 @@ bool VersionEdit::EncodeTo(std::string* dst,
     PutLengthPrefixedSlice(dst, progress_data);
   }
 
+  // for levelhash
+  // bucket deletions info
+  for (const auto& del : bucket_deletions_) {
+    PutVarint32(dst, kDeleteBucketFromFile);
+    PutVarint32Varint64(dst, del.level, del.file_number);
+    PutVarint32(dst, del.bucket_id);
+  }
+
   return true;
 }
 
@@ -832,6 +840,20 @@ Status VersionEdit::DecodeFrom(const Slice& src) {
         SetSubcompactionProgress(progress);
         break;
       }
+      // for levelhash
+      case kDeleteBucketFromFile: {
+        int level;
+        uint64_t file_number;
+        uint32_t bucket_id;
+        if (GetLevel(&input, &level, max_level_) &&
+            GetVarint64(&input, &file_number) &&
+            GetVarint32(&input, &bucket_id)) {
+          bucket_deletions_.push_back({level, file_number, bucket_id});
+        } else {
+          msg = "[LEVELHASH]: Delete bucket from file";
+        }
+        break;
+      }
 
       default:
         if (tag & kTagSafeIgnoreMask) {
@@ -1002,6 +1024,15 @@ std::string VersionEdit::DebugString(bool hex_key) const {
   if (HasSubcompactionProgress()) {
     r.append("\n SubcompactionProgress: ");
     r.append(subcompaction_progress_.ToString());
+  }
+  // for levelhash
+  for (const auto& del : bucket_deletions_) {
+    r.append("\n  DeleteBucket: ");
+    AppendNumberTo(&r, del.level);
+    r.append(" ");
+    AppendNumberTo(&r, del.file_number);
+    r.append(" Bucket: ");
+    AppendNumberTo(&r, del.bucket_id);
   }
   r.append("\n}\n");
   return r;

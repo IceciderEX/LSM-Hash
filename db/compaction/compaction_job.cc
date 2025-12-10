@@ -1046,6 +1046,24 @@ Status CompactionJob::RunLevelHashCompaction(uint32_t target_bucket_id) {
       return status;
   }
 
+  if (output_meta.fd.GetFileSize() > 0) {
+      Compaction* c = compact_->compaction;
+      int64_t current_time = 0;
+      db_options_.clock->GetCurrentTime(&current_time);
+
+      output_meta.file_creation_time = static_cast<uint64_t>(current_time);
+      output_meta.oldest_ancester_time = c->MinInputFileOldestAncesterTime(nullptr, nullptr);
+      if (output_meta.oldest_ancester_time == std::numeric_limits<uint64_t>::max()) {
+          output_meta.oldest_ancester_time = output_meta.file_creation_time;
+      }
+      output_meta.epoch_number = c->MinInputFileEpochNumber();
+      if (output_meta.epoch_number == kUnknownEpochNumber) {
+          // old file no epoch
+          output_meta.epoch_number = c->column_family_data()->NewEpochNumber();
+      }
+      output_meta.temperature = c->GetOutputTemperature(false);
+  }
+
   // [Sync]
   if (output_meta.fd.GetFileSize() > 0) {
       status = SyncLevelHashOutputDirectory();
@@ -1075,11 +1093,13 @@ Status CompactionJob::RunLevelHashCompaction(uint32_t target_bucket_id) {
   UpdateLevelHashInternalStats(io_stats);
 
   // versionedit 的变化记录
-  // TODO: deleted_files 
   if (output_meta.fd.GetFileSize() > 0) {
       VersionEdit* edit = compact_->compaction->edit();
       edit->AddFile(compact_->compaction->output_level(), output_meta);
   }
+  
+  // TODO: deleted_files（需要将一个 bucket 作为一个 sst）
+  // compact_->compaction->AddInputDeletions(edit);
 
   // [Finalize] Log & Event
   VerifyAndFinalizeLevelHashRun(status, io_stats);
@@ -1196,7 +1216,6 @@ Status CompactionJob::ProcessLevelHashData(
   const auto& ioptions = compaction->immutable_options();
   const InternalKeyComparator& icmp = cfd->internal_comparator();
   
-  // 去重，暂时先这样实现
   std::unordered_map<std::string, KeyVersion> dedupe_map;
 
   // [Read & Filter] 
@@ -1226,12 +1245,10 @@ Status CompactionJob::ProcessLevelHashData(
       ParsedInternalKey parsed_key;
       if (!ParseInternalKey(key_slice, &parsed_key, false).ok()) continue;
 
-      // 计算 Bucket Index
       uint64_t hash = MurmurHash64A(parsed_key.user_key.data(), 
                                  static_cast<int>(parsed_key.user_key.size()), 0);
       uint32_t b_idx = GetBucketIndex(hash, input_g);
       
-      // Bucket 过滤
       if (b_idx == target_bucket_id) {
          num_input_records++;
          std::string user_key_str = parsed_key.user_key.ToString();
@@ -1243,7 +1260,6 @@ Status CompactionJob::ProcessLevelHashData(
              kv.seq = parsed_key.sequence;
              dedupe_map.emplace(user_key_str, std::move(kv));
          } else {
-             // 保留 SeqNo 更大的版本
              if (parsed_key.sequence > it->second.seq) {
                  it->second.internal_key = key_slice.ToString();
                  it->second.value = iter->value().ToString();
@@ -1256,7 +1272,6 @@ Status CompactionJob::ProcessLevelHashData(
 
   std::unique_ptr<WritableFileWriter> file_writer;
   uint64_t file_number = versions_->NewFileNumber();
-  // 使用 output_path_id
   std::string fname = TableFileName(ioptions.cf_paths, file_number, compaction->output_path_id());
   Status s;
   {
@@ -1271,7 +1286,7 @@ Status CompactionJob::ProcessLevelHashData(
       cfd->internal_comparator(), cfd->internal_tbl_prop_coll_factories(), 
       compaction->output_compression(), compaction->output_compression_opts(), 
       cfd->GetID(), cfd->GetName(), 
-      compaction->output_level(), // Output Level
+      compaction->output_level(),
       0, false, TableFileCreationReason::kCompaction, 0, 0, db_id_, db_session_id_,
       0, file_number
   );
@@ -1279,13 +1294,28 @@ Status CompactionJob::ProcessLevelHashData(
   std::unique_ptr<TableBuilder> builder(
       new LevelHashTableBuilder(tb_options, file_writer.get(), initial_g)
   );
-  // Write
+
+  // Write & Compute Boundaries
   InternalKey smallest, largest;
+  SequenceNumber min_seq = kMaxSequenceNumber;
+  SequenceNumber max_seq = 0;
   bool first_key = true;
+
   for (const auto& kv_pair : dedupe_map) {
-    builder->Add(kv_pair.second.internal_key, kv_pair.second.value);
+    const std::string& ikey_data = kv_pair.second.internal_key;
+    builder->Add(ikey_data, kv_pair.second.value);
+    
+    // 解析 Internal Key 以更新元数据
     InternalKey current_ikey;
-    current_ikey.DecodeFrom(kv_pair.second.internal_key);
+    current_ikey.DecodeFrom(ikey_data);
+    ParsedInternalKey parsed_key;
+    ParseInternalKey(ikey_data, &parsed_key, false); 
+
+    // seqno range
+    if (parsed_key.sequence < min_seq) min_seq = parsed_key.sequence;
+    if (parsed_key.sequence > max_seq) max_seq = parsed_key.sequence;
+
+    // keyrange
     if (first_key) {
         smallest = current_ikey;
         largest = current_ikey;
@@ -1299,13 +1329,13 @@ Status CompactionJob::ProcessLevelHashData(
   if (!s.ok()) return s;
 
   uint64_t file_size = builder->FileSize();
-  // FileMetaData
+  
   if (file_size > 0) {
       output_file_meta->fd = FileDescriptor(file_number, compaction->output_path_id(), file_size);
       output_file_meta->smallest = smallest;
       output_file_meta->largest = largest;
-      output_file_meta->fd.smallest_seqno = 0; // TODO：计算逻辑
-      output_file_meta->fd.largest_seqno = kMaxSequenceNumber; 
+      output_file_meta->fd.smallest_seqno = min_seq; 
+      output_file_meta->fd.largest_seqno = max_seq; 
       output_file_meta->marked_for_compaction = false;
       output_file_meta->file_checksum = builder->GetFileChecksum();
       output_file_meta->file_checksum_func_name = builder->GetFileChecksumFuncName();
@@ -1317,18 +1347,24 @@ Status CompactionJob::ProcessLevelHashData(
       if (table_properties) {
           *table_properties = std::make_shared<TableProperties>(builder->GetTableProperties());
       }
-      // compaction->SetOutputTableProperties(fname, std::make_shared<TableProperties>(builder->GetTableProperties()));
+  } else {
+    // empty file
   }
 
-  // [Stats] 
-  stats->micros = db_options_.clock->NowMicros() - start_micros;
-  stats->cpu_micros = db_options_.clock->CPUMicros() - start_cpu_micros;
-  stats->bytes_read_non_output_levels = total_input_bytes;
-  stats->bytes_written = file_size;
-  stats->num_input_files_in_non_output_levels = level_files->size();
-  stats->num_output_files = 1;
-  stats->num_input_records = num_input_records;
-  stats->num_output_records = builder->NumEntries();
+  if (stats) {
+      stats->micros = db_options_.clock->NowMicros() - start_micros;
+      stats->cpu_micros = db_options_.clock->CPUMicros() - start_cpu_micros;
+      stats->bytes_read_non_output_levels = total_input_bytes;
+      stats->bytes_written = file_size;
+      stats->num_input_files_in_non_output_levels = level_files->size();
+      stats->num_output_files = (file_size > 0) ? 1 : 0;
+      stats->num_input_records = num_input_records;
+      stats->num_output_records = builder->NumEntries();
+  }
+
+  // 关闭文件 writer
+  // s = file_writer->Sync(opt);
+  // if (s.ok()) s = file_writer->Close();
 
   return s;
 }
