@@ -296,6 +296,8 @@ class LevelHashTableReader : public TableReader {
   std::shared_ptr<const TableProperties> GetTableProperties() const override {
     return table_properties_;
   }
+
+  void MarkObsolete(uint32_t /*uncache_aggressiveness*/) override {}
   
  private:
   LevelHashTableReader(const TableReaderOptions& table_reader_options,
@@ -304,7 +306,7 @@ class LevelHashTableReader : public TableReader {
 
   Status LoadIndex();
 
-  const TableReaderOptions& table_reader_options_;
+  // const TableReaderOptions& table_reader_options_;
   std::unique_ptr<RandomAccessFileReader> file_;
   uint64_t file_size_;
   std::shared_ptr<const TableProperties> table_properties_;

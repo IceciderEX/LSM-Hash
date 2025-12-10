@@ -2609,7 +2609,11 @@ Status CompactionJob::InstallCompactionResults(bool* compaction_released) {
   assert(edit);
 
   // Add compaction inputs
-  compaction->AddInputDeletions(edit);
+  // for levelhash
+  if (!compaction->HasTargetBucket()) {
+      compaction->AddInputDeletions(edit);
+  }
+  // compaction->AddInputDeletions(edit);
 
   std::unordered_map<uint64_t, BlobGarbageMeter::BlobStats> blob_total_garbage;
 

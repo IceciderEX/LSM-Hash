@@ -90,7 +90,7 @@ void TestBucketThresholdFlush() {
         assert(value == "val_" + std::to_string(i));
     }
     // 确认删除的数据确实不可见
-    for (int i = 100; i < 200; ++i) {
+    for (int i = 0; i < 1500; ++i) {
         s = db->Get(ReadOptions(), "key_" + std::to_string(i), &value);
         assert(!s.ok());
     }

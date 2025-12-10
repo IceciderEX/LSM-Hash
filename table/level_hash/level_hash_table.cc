@@ -192,14 +192,14 @@ const char* LevelHashTableBuilder::GetFileChecksumFuncName() const {
 LevelHashTableReader::LevelHashTableReader(
     const TableReaderOptions& table_reader_options,
     std::unique_ptr<RandomAccessFileReader>&& file, uint64_t file_size)
-    : table_reader_options_(table_reader_options),
+    : // table_reader_options_(table_reader_options),
       file_(std::move(file)),
       file_size_(file_size),
       G_(0),
       num_buckets_(0),
       index_offset_(0) {
   table_properties_ = std::make_shared<TableProperties>();
-  user_comparator_ = table_reader_options_.internal_comparator.user_comparator();
+  user_comparator_ = table_reader_options.internal_comparator.user_comparator();
 }
 
 LevelHashTableReader::~LevelHashTableReader() {}

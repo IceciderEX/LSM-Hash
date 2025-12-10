@@ -1081,7 +1081,7 @@ class VersionBuilder::Rep {
     }
     
     auto& level_state = levels_[level];
-    // clone-on-write
+    // clone-on-write，旧版本的 version 不可变
     if (level_state.added_files.find(file_number) == level_state.added_files.end()) {
       FileMetaData* f_copy = new FileMetaData(*f);
       f_copy->refs = 1;
