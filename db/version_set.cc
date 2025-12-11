@@ -226,7 +226,8 @@ class FilePicker {
           }
           // Key falls out of current file's range
           if (cmp_smallest < 0 || cmp_largest > 0) {
-            if (curr_level_ == 0) {
+            // for levelhash
+            if (curr_level_ == 0 || is_level_hash_) {
               ++curr_index_in_curr_level_;
               continue;
             } else {

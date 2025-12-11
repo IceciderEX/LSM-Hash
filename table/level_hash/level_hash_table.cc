@@ -225,6 +225,7 @@ Status LevelHashTableReader::Open(
   return Status::OK();
 }
 
+// index section loaded
 Status LevelHashTableReader::LoadIndex() {
   char footer_scratch[kFooterSize];
   Slice footer_slice;

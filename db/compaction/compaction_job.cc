@@ -1197,9 +1197,10 @@ void CompactionJob::InitializeLevelHashCompactionRun(uint32_t target_bucket_id) 
 }
 
 struct KeyVersion {
-  std::string internal_key;  
-  std::string value;        
+  std::string internal_key;
+  std::string value;
   SequenceNumber seq;
+  ValueType type;
 };
 
 // NOTE: NOT DONE
@@ -1219,8 +1220,10 @@ Status CompactionJob::ProcessLevelHashData(
   const auto& mutable_cf_options = compaction->mutable_cf_options();
   const auto& ioptions = compaction->immutable_options();
   const InternalKeyComparator& icmp = cfd->internal_comparator();
-  
-  std::unordered_map<std::string, KeyVersion> dedupe_map;
+
+  // [Snapshot] 处理有快照的情况
+  SequenceNumber earliest_snapshot = this->earliest_snapshot_;
+  std::unordered_map<std::string, std::vector<KeyVersion>> version_map;
 
   // [Read & Filter] 
   uint64_t total_input_bytes = 0;
@@ -1255,21 +1258,13 @@ Status CompactionJob::ProcessLevelHashData(
       
       if (b_idx == target_bucket_id) {
          num_input_records++;
-         std::string user_key_str = parsed_key.user_key.ToString();
-         auto it = dedupe_map.find(user_key_str);
-         if (it == dedupe_map.end()) {
-             KeyVersion kv;
-             kv.internal_key = key_slice.ToString();
-             kv.value = iter->value().ToString();
-             kv.seq = parsed_key.sequence;
-             dedupe_map.emplace(user_key_str, std::move(kv));
-         } else {
-             if (parsed_key.sequence > it->second.seq) {
-                 it->second.internal_key = key_slice.ToString();
-                 it->second.value = iter->value().ToString();
-                 it->second.seq = parsed_key.sequence;
-             }
-         }
+         KeyVersion kv;
+         kv.internal_key = key_slice.ToString();
+         kv.value = iter->value().ToString();
+         kv.seq = parsed_key.sequence;
+         kv.type = parsed_key.type;
+
+         version_map[parsed_key.user_key.ToString()].emplace_back(std::move(kv));
       }
     }
   }
@@ -1303,30 +1298,52 @@ Status CompactionJob::ProcessLevelHashData(
   InternalKey smallest, largest;
   SequenceNumber min_seq = kMaxSequenceNumber;
   SequenceNumber max_seq = 0;
-  bool first_key = true;
+  bool first_key_global = true;
 
-  for (const auto& kv_pair : dedupe_map) {
-    const std::string& ikey_data = kv_pair.second.internal_key;
-    builder->Add(ikey_data, kv_pair.second.value);
-    
-    // 解析 Internal Key 以更新元数据
-    InternalKey current_ikey;
-    current_ikey.DecodeFrom(ikey_data);
-    ParsedInternalKey parsed_key;
-    ParseInternalKey(ikey_data, &parsed_key, false); 
+  for (auto& entry : version_map) {
+    auto& versions = entry.second;
+    // 按照 seqno 降序排序
+    if (versions.size() > 1) {
+        std::sort(versions.begin(), versions.end(), [](const KeyVersion& a, const KeyVersion& b) {
+            return a.seq > b.seq;
+        });
+    }
 
-    // seqno range
-    if (parsed_key.sequence < min_seq) min_seq = parsed_key.sequence;
-    if (parsed_key.sequence > max_seq) max_seq = parsed_key.sequence;
+    bool has_outputted_visible_snapshot = false;
+    for (size_t i = 0; i < versions.size(); ++i) {
+      bool keep = false;
+      // Rule A: 最新版本
+      if (i == 0) {
+        keep = true;
+      }
+      // Rule B: Seq >= earliest_snapshot，在最老快照之后创建的，保留
+      if (versions[i].seq >= earliest_snapshot) {
+          keep = true;
+      } 
+      // Rule C: Seq < earliest_snapshot，保留第一个满足此条件的版本
+      else if (!has_outputted_visible_snapshot) {
+          keep = true;
+          has_outputted_visible_snapshot = true;
+      }
 
-    // keyrange
-    if (first_key) {
-        smallest = current_ikey;
-        largest = current_ikey;
-        first_key = false;
-    } else {
-        if (icmp.Compare(current_ikey, smallest) < 0) smallest = current_ikey;
-        if (icmp.Compare(current_ikey, largest) > 0) largest = current_ikey;
+      if (keep) {
+        builder->Add(versions[i].internal_key, versions[i].value);
+        ParsedInternalKey parsed_key;
+        ParseInternalKey(versions[i].internal_key, &parsed_key, false); 
+        if (parsed_key.sequence < min_seq) min_seq = parsed_key.sequence;
+        if (parsed_key.sequence > max_seq) max_seq = parsed_key.sequence;
+        InternalKey current_ikey;
+        current_ikey.DecodeFrom(versions[i].internal_key);
+
+        if (first_key_global) {
+            smallest = current_ikey;
+            largest = current_ikey;
+            first_key_global = false;
+        } else {
+            if (icmp.Compare(current_ikey, smallest) < 0) smallest = current_ikey;
+            if (icmp.Compare(current_ikey, largest) > 0) largest = current_ikey;
+        }
+      }
     }
   }
   s = builder->Finish();
@@ -1366,7 +1383,7 @@ Status CompactionJob::ProcessLevelHashData(
       stats->num_output_records = builder->NumEntries();
   }
 
-  // 关闭文件 writer
+  // writer
   // s = file_writer->Sync(opt);
   // if (s.ok()) s = file_writer->Close();
 

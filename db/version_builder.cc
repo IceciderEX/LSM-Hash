@@ -1085,6 +1085,12 @@ class VersionBuilder::Rep {
     if (level_state.added_files.find(file_number) == level_state.added_files.end()) {
       FileMetaData* f_copy = new FileMetaData(*f);
       f_copy->refs = 1;
+      // Avoid Double Free / Dangling Pointer
+      f_copy->table_reader_handle = nullptr;
+      f_copy->fd.table_reader = nullptr;
+      // 修改原先的 sst 的状态...
+      // TODO：还需要包含什么？
+      f_copy->being_compacted = false;
       // 将副本放入 added_files
       level_state.added_files.emplace(file_number, f_copy);
       f = f_copy;
