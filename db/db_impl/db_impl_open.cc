@@ -29,6 +29,9 @@
 #include "util/string_util.h"
 #include "util/udt_util.h"
 
+#include "memtable/level_hash_memtable.h"
+#include "table/level_hash/level_hash_table.h"
+
 namespace ROCKSDB_NAMESPACE {
 Options SanitizeOptions(const std::string& dbname, const Options& src,
                         bool read_only, Status* logger_creation_s) {
@@ -1990,14 +1993,208 @@ Status DBImpl::WriteLevel0TableForRecovery(int job_id, ColumnFamilyData* cfd,
   Arena arena;
   Status s;
   TableProperties table_properties;
+  // [Logic] User Defined Timestamp Check
   const auto* ucmp = cfd->internal_comparator().user_comparator();
   assert(ucmp);
   const size_t ts_sz = ucmp->timestamp_size();
   const bool logical_strip_timestamp =
       ts_sz > 0 && !cfd->ioptions().persist_user_defined_timestamps;
+
   // Note that here we treat flush as level 0 compaction in internal stats
   InternalStats::CompactionStats flush_stats(CompactionReason::kFlush,
                                              1 /* count */);
+
+  // Get the latest mutable cf options while the mutex is still locked
+  const MutableCFOptions mutable_cf_options_copy =
+      cfd->GetLatestMutableCFOptions();
+  bool is_level_hash = false;
+  if (mutable_cf_options_copy.table_factory && 
+      strcmp(mutable_cf_options_copy.table_factory->Name(), "LevelHashTableFactory") == 0) {
+      is_level_hash = true;
+  }
+
+  if (is_level_hash) {
+    // 1. Prepare Metadata (Time, Epoch)
+    int64_t _current_time = 0;
+    immutable_db_options_.clock->GetCurrentTime(&_current_time).PermitUncheckedError();
+    const uint64_t current_time = static_cast<uint64_t>(_current_time);
+    
+    uint64_t oldest_key_time = mem->ApproximateOldestKeyTime();
+    uint64_t oldest_ancester_time = std::min(current_time, oldest_key_time);
+    meta.oldest_ancester_time = oldest_ancester_time;
+    meta.file_creation_time = current_time;
+    meta.epoch_number = cfd->NewEpochNumber();
+
+    ROCKS_LOG_DEBUG(immutable_db_options_.info_log,
+                    "[%s] [WriteLevel0TableForRecovery]"
+                    " Level-0 table #%" PRIu64 ": started",
+                    cfd->GetName().c_str(), meta.fd.GetNumber());
+
+    // 2. Unlock Mutex for IO
+    mutex_.Unlock();
+    // 3. Prepare Writer
+    std::string fname = TableFileName(immutable_db_options_.db_paths, meta.fd.GetNumber(), meta.fd.GetPathId());
+    std::unique_ptr<WritableFileWriter> file_writer;
+    {
+          std::unique_ptr<FSWritableFile> writable_file;
+          s = NewWritableFile(fs_.get(), fname, &writable_file, file_options_);
+          if (s.ok()) {
+             file_writer.reset(new WritableFileWriter(
+                 std::move(writable_file), fname, file_options_, 
+                 immutable_db_options_.clock, io_tracer_, immutable_db_options_.stats, 
+                 Histograms::SST_WRITE_MICROS));
+          }
+      }
+
+      if (s.ok()) {
+
+          // 4. Prepare Custom Builder
+          // Note: using kFlush reason to ensure consistency
+          TableBuilderOptions tb_options(
+              cfd->ioptions(), mutable_cf_options_copy, 
+              ReadOptions(), WriteOptions(), 
+              cfd->internal_comparator(), cfd->internal_tbl_prop_coll_factories(), 
+              mutable_cf_options_copy.blob_compression_type, // compression
+              mutable_cf_options_copy.compression_opts, 
+              cfd->GetID(), cfd->GetName(), 
+              0, 0, false, 
+              TableFileCreationReason::kRecovery, 
+              0, 0, db_id_, db_session_id_, 0, meta.fd.GetNumber()
+          );
+
+          // Assuming G=3 for L0 recovery
+          const uint32_t kInitialG = 3; 
+          auto level_hash_builder = new LevelHashTableBuilder(tb_options, file_writer.get(), kInitialG);
+          std::unique_ptr<TableBuilder> builder(level_hash_builder);
+
+          ScopedArenaPtr<InternalIterator> iter(
+              logical_strip_timestamp
+                  ? mem->NewTimestampStrippingIterator(
+                        ro, /*seqno_to_time_mapping=*/nullptr, &arena,
+                        /*prefix_extractor=*/nullptr, ts_sz)
+                  : mem->NewIterator(ro, /*seqno_to_time_mapping=*/nullptr, &arena,
+                                     mutable_cf_options_copy.prefix_extractor.get(),
+                                     true /* for_flush (unordered for LevelHash) */));
+          
+          // NOTE: Level-Hash does NOT support Range Deletions (range_del_iters),
+
+          InternalKey smallest_key, largest_key;
+          bool first_key_found = false;
+          SequenceNumber min_seqno = kMaxSequenceNumber;
+          SequenceNumber max_seqno = 0;
+          uint64_t num_input_records = 0;
+
+          for (iter->SeekToFirst(); iter->Valid(); iter->Next()) {
+              Slice key = iter->key();
+              Slice val = iter->value();
+              
+              builder->Add(key, val);
+              num_input_records++;
+
+              // Update Statistics & Boundaries
+              ParsedInternalKey parsed_key;
+              if (!ParseInternalKey(key, &parsed_key, false).ok()) continue;
+              
+              if (parsed_key.sequence < min_seqno) min_seqno = parsed_key.sequence;
+              if (parsed_key.sequence > max_seqno) max_seqno = parsed_key.sequence;
+
+              InternalKey current_ikey;
+              current_ikey.DecodeFrom(key);
+
+              if (!first_key_found) {
+                  smallest_key = current_ikey;
+                  largest_key = current_ikey;
+                  first_key_found = true;
+              } else {
+                  if (cfd->internal_comparator().Compare(current_ikey, smallest_key) < 0) {
+                      smallest_key = current_ikey;
+                  }
+                  if (cfd->internal_comparator().Compare(current_ikey, largest_key) > 0) {
+                      largest_key = current_ikey;
+                  }
+              }
+          }
+
+          // 6. Finish
+          s = builder->Finish();
+
+          if (s.ok()) {
+              meta.fd.file_size = builder->FileSize();
+              meta.file_checksum = builder->GetFileChecksum();
+              meta.file_checksum_func_name = builder->GetFileChecksumFuncName();
+              meta.valid_bucket_bitmap = level_hash_builder->GetValidBucketBitmap();
+
+              if (first_key_found) {
+                  meta.smallest = smallest_key;
+                  meta.largest = largest_key;
+                  meta.fd.smallest_seqno = min_seqno;
+                  meta.fd.largest_seqno = max_seqno;
+              } else {
+                  // Empty file case
+                  meta.fd.smallest_seqno = 0;
+                  meta.fd.largest_seqno = 0;
+              }
+
+              flush_stats.num_input_records = num_input_records;
+              flush_stats.num_output_records = builder->NumEntries();
+              flush_stats.num_output_files = 1;
+              flush_stats.bytes_written = builder->FileSize();
+          }
+      }
+
+      // Sync and Close
+      if (s.ok()) {
+          s = file_writer->Sync(IOOptions(), true);
+      }
+      if (s.ok()) {
+          s = file_writer->Close(IOOptions());
+      }
+
+      // Re-lock Mutex
+      mutex_.Lock();
+
+      // Update Edit
+      const bool has_output = meta.fd.GetFileSize() > 0;
+      if (s.ok() && has_output) {
+        edit->AddFile(0 /* level */, meta.fd.GetNumber(), meta.fd.GetPathId(),
+                  meta.fd.GetFileSize(), meta.smallest, meta.largest,
+                  meta.fd.smallest_seqno, meta.fd.largest_seqno,
+                  meta.marked_for_compaction, meta.temperature,
+                  meta.oldest_blob_file_number, meta.oldest_ancester_time,
+                  meta.file_creation_time, meta.epoch_number,
+                  meta.file_checksum, meta.file_checksum_func_name,
+                  meta.unique_id, meta.compensated_range_deletion_size,
+                  meta.tail_size, meta.user_defined_timestamps_persisted,
+                  meta.valid_bucket_bitmap);
+      }
+      
+      ReleaseFileNumberFromPendingOutputs(pending_outputs_inserted_elem);
+
+      flush_stats.micros = immutable_db_options_.clock->NowMicros() - start_micros;
+
+      const bool has_output_final = meta.fd.GetFileSize() > 0;
+      if (has_output_final) {
+        flush_stats.bytes_written = meta.fd.GetFileSize();
+        flush_stats.num_output_files = 1;
+      }
+
+      const auto& blobs = edit->GetBlobFileAdditions();
+      for (const auto& blob : blobs) {
+        flush_stats.bytes_written_blob += blob.GetTotalBlobBytes();
+      }
+
+      flush_stats.num_output_files_blob = static_cast<int>(blobs.size());
+
+      cfd->internal_stats()->AddCompactionStats(0 /* level */, Env::Priority::USER,
+                                                flush_stats);
+      cfd->internal_stats()->AddCFStats(
+          InternalStats::BYTES_FLUSHED,
+          flush_stats.bytes_written + flush_stats.bytes_written_blob);
+      RecordTick(stats_, COMPACT_WRITE_BYTES, meta.fd.GetFileSize());
+      return s;
+  }
+
+  // initial implementation
   {
     ScopedArenaPtr<InternalIterator> iter(
         logical_strip_timestamp
@@ -2013,8 +2210,8 @@ Status DBImpl::WriteLevel0TableForRecovery(int job_id, ColumnFamilyData* cfd,
                     cfd->GetName().c_str(), meta.fd.GetNumber());
 
     // Get the latest mutable cf options while the mutex is still locked
-    const MutableCFOptions mutable_cf_options_copy =
-        cfd->GetLatestMutableCFOptions();
+    // const MutableCFOptions mutable_cf_options_copy =
+    //     cfd->GetLatestMutableCFOptions();
     bool paranoid_file_checks =
         cfd->GetLatestMutableCFOptions().paranoid_file_checks;
 

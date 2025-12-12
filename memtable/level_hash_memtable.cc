@@ -1,4 +1,3 @@
-// Copyright (C) 2023-present, RocksDB-Level-Hash. All rights reserved.
 #include "memtable/level_hash_memtable.h"
 #include "level_hash_iterator.h" 
 

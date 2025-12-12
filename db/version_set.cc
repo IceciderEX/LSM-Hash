@@ -205,7 +205,8 @@ class FilePicker {
           // Check if key is within a file's range. If search left bound and
           // right bound point to the same find, we are sure key falls in
           // range.
-          assert(curr_level_ == 0 ||
+          // for levelhash
+          assert(curr_level_ == 0 || is_level_hash_ ||
                  curr_index_in_curr_level_ == start_index_in_curr_level_ ||
                  user_comparator_->CompareWithoutTimestamp(
                      user_key_, ExtractUserKey(f->smallest_key)) <= 0);

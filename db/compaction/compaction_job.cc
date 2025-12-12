@@ -1016,7 +1016,6 @@ inline uint32_t GetBucketIndex(uint64_t hash, uint32_t G) {
 }
 
 // ----------------- LEVELHASH ------------------
-
 Status CompactionJob::RunLevelHashCompaction(uint32_t target_bucket_id) {
   // [Initialize]
   InitializeLevelHashCompactionRun(target_bucket_id);
@@ -1104,7 +1103,7 @@ Status CompactionJob::RunLevelHashCompaction(uint32_t target_bucket_id) {
   for (const auto* f : *input_files) {
       edit->DeleteBucketFromFile(c->level(0), f->fd.GetNumber(), target_bucket_id);
   }
-  std::cout << edit->DebugString() << std::endl;
+  // std::cout << edit->DebugString() << std::endl;
   // [Finalize] Log & Event
   VerifyAndFinalizeLevelHashRun(status, io_stats);
 
