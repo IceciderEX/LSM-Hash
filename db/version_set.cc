@@ -220,7 +220,7 @@ class FilePicker {
 
           // Setup file search bound for the next level based on the
           // comparison results
-          if (curr_level_ > 0) {
+          if (curr_level_ > 0 && !is_level_hash_) {
             file_indexer_->GetNextLevelIndex(
                 curr_level_, curr_index_in_curr_level_, cmp_smallest,
                 cmp_largest, &search_left_bound_, &search_right_bound_);
@@ -239,7 +239,7 @@ class FilePicker {
         }
 
         returned_file_level_ = curr_level_;
-        if (curr_level_ > 0 && cmp_largest < 0) {
+        if (curr_level_ > 0 && cmp_largest < 0 && !is_level_hash_) {
           // No more files to search in this level.
           search_ended_ = !PrepareNextLevel();
         } else {

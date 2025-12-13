@@ -22,7 +22,7 @@ using namespace ROCKSDB_NAMESPACE;
 
 // 配置参数
 const int kNumKeys = 10000;          // Key 的总范围 0 ~ kNumKeys
-const int kNumOperations = 100000;   // 总操作次数
+const int kNumOperations = 300000;   // 总操作次数
 const int kNumWriterThreads = 2;     // 写线程数
 const int kNumReaderThreads = 1;     // 读线程数
 const int kReopenInterval = 30000;   // 每多少次操作重启一次 DB (测试 Manifest 持久化)

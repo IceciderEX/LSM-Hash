@@ -91,7 +91,7 @@ void LevelHashMemTable::Insert(KeyHandle handle) {
   // 加锁写入（暂定）
   Bucket* bucket = buckets_[bucket_idx].get();
   {
-    std::lock_guard<std::mutex> lock(bucket->mutex_);
+    std::unique_lock<std::shared_mutex> lock(bucket->mutex_);
     bucket->entries_.push_back(handle);
 
     // 检查单 Bucket 阈值，触发 Flush
@@ -110,8 +110,8 @@ bool LevelHashMemTable::Contains(const char* key) const {
   uint32_t bucket_idx = GetBucketIndex(hash, G_);
 
   const Bucket* bucket = buckets_[bucket_idx].get();
-  // 加锁读取 (防止读取时发生 vector 扩容导致迭代器失效)
-  std::lock_guard<std::mutex> lock(bucket->mutex_);
+  // 加锁读取 (防止读取时发生 vector 扩容)
+  std::shared_lock<std::shared_mutex> lock(bucket->mutex_);
 
   const MemTable::KeyComparator& impl_comparator = 
       static_cast<const MemTable::KeyComparator&>(comparator_);
@@ -144,7 +144,7 @@ void LevelHashMemTable::Get(const LookupKey& k, void* callback_args,
   const Bucket* bucket = buckets_[bucket_idx].get();
   
   // 加锁读取
-  std::lock_guard<std::mutex> lock(bucket->mutex_);
+  std::shared_lock<std::shared_mutex> lock(bucket->mutex_);
 
   const MemTable::KeyComparator& impl_comparator = 
       static_cast<const MemTable::KeyComparator&>(comparator_);

@@ -17,7 +17,7 @@ class LevelHashMemTable : public MemTableRep {
  public:
   // 定义 Bucket 结构
   struct Bucket {
-    mutable std::mutex mutex_;
+    mutable std::shared_mutex mutex_;
     std::vector<KeyHandle> entries_;
   };
 
