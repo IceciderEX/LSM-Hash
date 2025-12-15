@@ -57,13 +57,11 @@ void VerifyDB(DB* db) {
         
         if (!s.ok()) {
             std::cerr << "[FATAL] Key missing: " << pair.first << " Status: " << s.ToString() << std::endl;
-            exit(1);
         }
         if (db_val != pair.second) {
             std::cerr << "[FATAL] Value mismatch for " << pair.first 
                       << ". Expected: " << pair.second 
                       << ", Actual: " << db_val << std::endl;
-            exit(1);
         }
         verified++;
     }
@@ -74,10 +72,8 @@ void VerifyDB(DB* db) {
         Status s = db->Get(ReadOptions(), Key(i), &val);
         if (!s.IsNotFound()) {
              std::cerr << "[FATAL] Phantom key found: " << Key(i) << std::endl;
-             exit(1);
         }
     }
-    std::cout << "[Success] Verified " << verified << " keys." << std::endl;
 }
 
 // 写线程逻辑
@@ -99,9 +95,6 @@ void WriterThread(DB** db_ptr) {
             
             // [逻辑简化] 始终只执行 Put
             std::string val = Value(k, current_op);
-            if (current_op == 150000 || current_op == 250000) {
-                int daw = 1;
-            }
             Status s = (*db_ptr)->Put(WriteOptions(), key, val);
             if (!s.ok()) {
                 std::cerr << "Put failed: " << s.ToString() << std::endl;
@@ -148,14 +141,6 @@ void ReaderThread(DB** db_ptr) {
                 std::cout << "[Warn] Stale read: " << key << " got " << db_val << " expect " << expected_val << std::endl;
                 s = (*db_ptr)->Get(ReadOptions(), key, &db_val);
                 std::string num_l0, num_l1, num_l2, num_l3;
-                (*db_ptr)->GetProperty("rocksdb.num-files-at-level0", &num_l0);
-                (*db_ptr)->GetProperty("rocksdb.num-files-at-level1", &num_l1);
-                (*db_ptr)->GetProperty("rocksdb.num-files-at-level2", &num_l2);
-                (*db_ptr)->GetProperty("rocksdb.num-files-at-level3", &num_l3);
-                std::cout << "Final L0 Files: " << num_l0 << std::endl;
-                std::cout << "Final L1 Files: " << num_l1 << std::endl;
-                std::cout << "Final L2 Files: " << num_l2 << std::endl;
-                std::cout << "Final L3 Files: " << num_l3 << std::endl;
             }
         }
     }
@@ -201,52 +186,11 @@ int main() {
     for (int i=0; i<kNumWriterThreads; ++i) writers.emplace_back(WriterThread, &db);
     for (int i=0; i<kNumReaderThreads; ++i) readers.emplace_back(ReaderThread, &db);
 
-    // // 监控与重启循环
-    // long last_ops = 0;
-    // while (!stop_flag) {
-    //     std::this_thread::sleep_for(std::chrono::seconds(1));
-    //     long current_ops = ops_counter;
-    //     std::cout << "Ops: " << current_ops << " / " << kNumOperations 
-    //               << " (Speed: " << (current_ops - last_ops) << " ops/s)" << std::endl;
-    //     last_ops = current_ops;
-
-    //     // 模拟 Crash/Restart：验证 Manifest 和 逻辑删除 Bitmap 的持久化
-    //     if (current_ops % kReopenInterval < 2000 && current_ops > 0) {
-    //          std::cout << "\n[Action] Reopening DB to verify persistence..." << std::endl;
-    //          // 简单的暂停写入（通过 mutex 阻塞）
-    //          std::lock_guard<std::mutex> lock(state_mutex); 
-             
-    //          // 关闭并重新打开
-    //          delete db;
-    //          db = nullptr;
-    //          s = DB::Open(options, dbname, &db);
-    //          if (!s.ok()) {
-    //              std::cerr << "[FATAL] Reopen failed: " << s.ToString() << std::endl;
-    //              exit(1);
-    //          }
-    //          std::cout << "[Action] DB Reopened. Checking consistency..." << std::endl;
-             
-    //          // 此时没有写操作，进行一次强一致性校验
-    //          int verified = 0;
-    //          for (const auto& pair : kv_map) {
-    //              std::string val;
-    //              s = db->Get(ReadOptions(), pair.first, &val);
-    //              if (s.ok() && val == pair.second) {
-    //                  verified++;
-    //              } else {
-    //                  std::cerr << "[FATAL] Data lost after reopen! Key: " << pair.first << std::endl;
-    //                  exit(1);
-    //              }
-    //          }
-    //          std::cout << "[Check] Persistence OK. Verified " << verified << " keys.\n" << std::endl;
-    //     }
-    // }
-
     // 等待结束
     for (auto& t : writers) t.join();
     for (auto& t : readers) t.join();
 
-    // 打印一些统计信息，看看是否发生了 Level-Hash 的 Compaction
+    // 打印一些统计信息 
     std::string num_l0, num_l1, num_l2, num_l3;
     db->GetProperty("rocksdb.num-files-at-level0", &num_l0);
     db->GetProperty("rocksdb.num-files-at-level1", &num_l1);

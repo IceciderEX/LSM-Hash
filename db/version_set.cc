@@ -7157,7 +7157,7 @@ Status VersionSet::WriteCurrentStateToManifest(
 
         for (const auto& f : level_files) {
           assert(f);
-
+          // for levelhash
           edit.AddFile(level, f->fd.GetNumber(), f->fd.GetPathId(),
                        f->fd.GetFileSize(), f->smallest, f->largest,
                        f->fd.smallest_seqno, f->fd.largest_seqno,
@@ -7166,7 +7166,8 @@ Status VersionSet::WriteCurrentStateToManifest(
                        f->file_creation_time, f->epoch_number, f->file_checksum,
                        f->file_checksum_func_name, f->unique_id,
                        f->compensated_range_deletion_size, f->tail_size,
-                       f->user_defined_timestamps_persisted);
+                       f->user_defined_timestamps_persisted, 
+                       f->valid_bucket_bitmap);
         }
       }
 

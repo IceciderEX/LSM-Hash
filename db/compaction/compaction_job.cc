@@ -1056,6 +1056,7 @@ Status CompactionJob::RunLevelHashCompaction(uint32_t target_bucket_id) {
       if (output_meta.oldest_ancester_time == std::numeric_limits<uint64_t>::max()) {
           output_meta.oldest_ancester_time = output_meta.file_creation_time;
       }
+      // 这里使用 new 的 epoch number，让 FilePicker 遍历时能从新到旧
       output_meta.epoch_number = c->column_family_data()->NewEpochNumber();
       output_meta.temperature = c->GetOutputTemperature(false);
   }
@@ -1333,13 +1334,13 @@ Status CompactionJob::ProcessLevelHashData(
 
   for (auto& entry : version_map) {
     auto& versions = entry.second;
-    // 按照 seqno 降序排序
     if (versions.size() > 1) {
-        std::sort(versions.begin(), versions.end(), [](const KeyVersion& a, const KeyVersion& b) {
-            return a.seq > b.seq;
-        });
+      std::sort(versions.begin(), versions.end(), [](const KeyVersion& a, const KeyVersion& b) {
+          return a.seq > b.seq; // Descending
+      });
     }
 
+    std::vector<KeyVersion> kept_versions;
     bool has_outputted_visible_snapshot = false;
     for (size_t i = 0; i < versions.size(); ++i) {
       bool keep = false;
@@ -1349,31 +1350,35 @@ Status CompactionJob::ProcessLevelHashData(
       }
       // Rule B: Seq >= earliest_snapshot，在最老快照之后创建的，保留
       if (versions[i].seq >= earliest_snapshot) {
-          keep = true;
+        keep = true;
       } 
       // Rule C: Seq < earliest_snapshot，保留第一个满足此条件的版本
       else if (!has_outputted_visible_snapshot) {
-          keep = true;
-          has_outputted_visible_snapshot = true;
+        keep = true;
+        has_outputted_visible_snapshot = true;
       }
-
       if (keep) {
-        builder->Add(versions[i].internal_key, versions[i].value);
-        ParsedInternalKey parsed_key;
-        ParseInternalKey(versions[i].internal_key, &parsed_key, false); 
-        if (parsed_key.sequence < min_seq) min_seq = parsed_key.sequence;
-        if (parsed_key.sequence > max_seq) max_seq = parsed_key.sequence;
-        InternalKey current_ikey;
-        current_ikey.DecodeFrom(versions[i].internal_key);
+        kept_versions.push_back(std::move(versions[i]));
+      }
+    }
 
-        if (first_key_global) {
-            smallest = current_ikey;
-            largest = current_ikey;
-            first_key_global = false;
-        } else {
-            if (icmp.Compare(current_ikey, smallest) < 0) smallest = current_ikey;
-            if (icmp.Compare(current_ikey, largest) > 0) largest = current_ikey;
-        }
+    for (auto it = kept_versions.rbegin(); it != kept_versions.rend(); ++it) {
+      builder->Add(it->internal_key, it->value);
+      // 同时更新边界 (Smallest/Largest/Seq) 逻辑
+      ParsedInternalKey parsed_key;
+      ParseInternalKey(it->internal_key, &parsed_key, false); 
+      if (parsed_key.sequence < min_seq) min_seq = parsed_key.sequence;
+      if (parsed_key.sequence > max_seq) max_seq = parsed_key.sequence;
+      
+      InternalKey current_ikey;
+      current_ikey.DecodeFrom(it->internal_key);
+      if (first_key_global) {
+        smallest = current_ikey;
+        largest = current_ikey;
+        first_key_global = false;
+      } else {
+        if (icmp.Compare(current_ikey, smallest) < 0) smallest = current_ikey;
+        if (icmp.Compare(current_ikey, largest) > 0) largest = current_ikey;
       }
     }
   }
