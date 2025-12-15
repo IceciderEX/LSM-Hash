@@ -55,7 +55,7 @@ Compaction* LevelHashCompactionPicker::PickCompaction(
       int input_level = level;
       int output_level = level + 1;
       uint32_t num_buckets = GetNumBucketsForLevel(input_level, kInitialG);
-      
+
       // 触发阈值：
       // L0 使用 level0_file_num_compaction_trigger
       // TODO: L1+ 层的判断条件
@@ -158,6 +158,7 @@ Compaction* LevelHashCompactionPicker::PickCompaction(
               -1, // score
               true // l0_files_might_overlap
           );
+
 
           c->SetTargetBucketId(target_bucket);
           RegisterCompaction(c);

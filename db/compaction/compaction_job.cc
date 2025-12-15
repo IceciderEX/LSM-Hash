@@ -1177,6 +1177,10 @@ void CompactionJob::InitializeLevelHashCompactionRun(uint32_t target_bucket_id) 
   const uint32_t kInitialG = 3; 
   int input_level = c->start_level();
   int output_level = c->output_level();
+
+  if (input_level >= 1 || output_level >= 2) {
+    int dqw = 3;
+  }
   
   uint32_t input_g = kInitialG + input_level;
   uint32_t output_g = kInitialG + output_level;
@@ -1349,6 +1353,9 @@ Status CompactionJob::ProcessLevelHashData(
   if (!s.ok()) return s;
 
   uint64_t file_size = builder->FileSize();
+  if (input_g >= 4) {
+    int dqw = 3;
+  }
   
   if (file_size > 0) {
       output_file_meta->fd = FileDescriptor(file_number, compaction->output_path_id(), file_size);

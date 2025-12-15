@@ -552,6 +552,11 @@ bool Compaction::InputCompressionMatchesOutput() const {
 }
 
 bool Compaction::IsTrivialMove() const {
+  // for levelhash
+  if (mutable_cf_options_.table_factory &&
+      strcmp(mutable_cf_options_.table_factory->Name(), "LevelHashTableFactory") == 0) {
+      return false;
+  }
   // Avoid a move if there is lots of overlapping grandparent data.
   // Otherwise, the move could create a parent file that will require
   // a very expensive merge later on.

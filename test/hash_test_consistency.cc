@@ -99,6 +99,9 @@ void WriterThread(DB** db_ptr) {
             
             // [逻辑简化] 始终只执行 Put
             std::string val = Value(k, current_op);
+            if (current_op == 150000 || current_op == 250000) {
+                int daw = 1;
+            }
             Status s = (*db_ptr)->Put(WriteOptions(), key, val);
             if (!s.ok()) {
                 std::cerr << "Put failed: " << s.ToString() << std::endl;
@@ -161,9 +164,9 @@ int main() {
     options.compaction_style = kCompactionStyleLevelHash;
     
     // 2. 极低阈值触发 Flush 和 Compaction，强制 Level-Hash 逻辑高频运转
-    options.write_buffer_size = 1024 * 1024 * 1;  
-    options.level0_file_num_compaction_trigger = 3; // L0 有 2 个文件就触发 Compaction
-    options.target_file_size_base = 1024 * 1024 * 1;
+    options.write_buffer_size = 128 * 1024 * 1;  
+    options.level0_file_num_compaction_trigger = 2; // L0 有 2 个文件就触发 Compaction
+    options.target_file_size_base = 128 * 1024 * 1;
     
     // 3. 开启自动 Compaction
     options.disable_auto_compactions = false;
@@ -233,15 +236,19 @@ int main() {
     for (auto& t : writers) t.join();
     for (auto& t : readers) t.join();
 
-    std::cout << "\n=== Test Finished. Final Verification === " << std::endl;
-    VerifyDB(db);
-
     // 打印一些统计信息，看看是否发生了 Level-Hash 的 Compaction
-    std::string num_l0, num_l1;
+    std::string num_l0, num_l1, num_l2, num_l3;
     db->GetProperty("rocksdb.num-files-at-level0", &num_l0);
     db->GetProperty("rocksdb.num-files-at-level1", &num_l1);
+    db->GetProperty("rocksdb.num-files-at-level2", &num_l2);
+    db->GetProperty("rocksdb.num-files-at-level3", &num_l3);
     std::cout << "Final L0 Files: " << num_l0 << std::endl;
     std::cout << "Final L1 Files: " << num_l1 << std::endl;
+    std::cout << "Final L2 Files: " << num_l2 << std::endl;
+    std::cout << "Final L3 Files: " << num_l3 << std::endl;
+
+    std::cout << "\n=== Test Finished. Final Verification === " << std::endl;
+    VerifyDB(db);
 
     delete db;
     return 0;

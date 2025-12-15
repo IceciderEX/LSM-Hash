@@ -589,13 +589,38 @@ class VersionBuilder::Rep {
       }
 
       // Check L1 and up
-
       for (int level = 1; level < num_levels_; ++level) {
-        auto checker = [this, level, icmp](const FileMetaData* lhs,
+        auto checker = [this, level, icmp, vstorage](const FileMetaData* lhs,
                                            const FileMetaData* rhs) {
-          assert(lhs);
-          assert(rhs);
+        assert(lhs);
+        assert(rhs);
+        // for levelhash
+        bool is_level_hash = false;
+        if (cfd_) {
+            const auto& mutable_opts = cfd_->GetLatestMutableCFOptions();
+            if (mutable_opts.table_factory && 
+                strcmp(mutable_opts.table_factory->Name(), "LevelHashTableFactory") == 0) {
+                is_level_hash = true;
+            }
+        }
 
+        if (is_level_hash) {
+          // level_zero_cmp_by_seqno_
+          bool correct_order = false;
+          if (vstorage->GetEpochNumberRequirement() != EpochNumberRequirement::kMightMissing) {
+              // 使用 Epoch 
+              correct_order = (*level_zero_cmp_by_epochno_)(lhs, rhs);
+          } else {
+              // 使用 SeqNo 
+              correct_order = (*level_zero_cmp_by_seqno_)(lhs, rhs);
+          }
+          if (!correct_order) {
+              std::ostringstream oss;
+              oss << "L" << level << " (Level-Hash) files are not sorted properly (NewestFirst): files #"
+                  << lhs->fd.GetNumber() << ", #" << rhs->fd.GetNumber();
+              return Status::Corruption("VersionBuilder", oss.str());
+          }
+        } else {
           if (!level_nonzero_cmp_->operator()(lhs, rhs)) {
             std::ostringstream oss;
             oss << 'L' << level << " files are not sorted properly: files #"
@@ -603,30 +628,20 @@ class VersionBuilder::Rep {
 
             return Status::Corruption("VersionBuilder", oss.str());
           }
+        }
+        // Make sure there is no overlap in level
+        if (!is_level_hash && icmp->Compare(lhs->largest, rhs->smallest) >= 0) {
+          std::ostringstream oss;
+          oss << 'L' << level << " has overlapping ranges: file #"
+              << lhs->fd.GetNumber()
+              << " largest key: " << lhs->largest.DebugString(true)
+              << " vs. file #" << rhs->fd.GetNumber()
+              << " smallest key: " << rhs->smallest.DebugString(true);
 
-          // for levelhash
-          bool is_level_hash = false;
-          if (cfd_) {
-              const auto& mutable_opts = cfd_->GetLatestMutableCFOptions();
-              if (mutable_opts.table_factory && 
-                  strcmp(mutable_opts.table_factory->Name(), "LevelHashTableFactory") == 0) {
-                  is_level_hash = true;
-              }
-          }
+          return Status::Corruption("VersionBuilder", oss.str());
+        }
 
-          // Make sure there is no overlap in level
-          if (!is_level_hash && icmp->Compare(lhs->largest, rhs->smallest) >= 0) {
-            std::ostringstream oss;
-            oss << 'L' << level << " has overlapping ranges: file #"
-                << lhs->fd.GetNumber()
-                << " largest key: " << lhs->largest.DebugString(true)
-                << " vs. file #" << rhs->fd.GetNumber()
-                << " smallest key: " << rhs->smallest.DebugString(true);
-
-            return Status::Corruption("VersionBuilder", oss.str());
-          }
-
-          return Status::OK();
+        return Status::OK();
         };
 
         const Status s = CheckConsistencyDetailsForLevel(
@@ -1565,6 +1580,16 @@ class VersionBuilder::Rep {
       return;
     }
 
+    // for levelhash [Level-Hash Check]
+    bool is_level_hash = false;
+    if (cfd_) {
+        const auto& mutable_opts = cfd_->GetLatestMutableCFOptions();
+        if (mutable_opts.table_factory && 
+            strcmp(mutable_opts.table_factory->Name(), "LevelHashTableFactory") == 0) {
+            is_level_hash = true;
+        }
+    }
+
     EpochNumberRequirement epoch_number_requirement =
         vstorage->GetEpochNumberRequirement();
 
@@ -1581,8 +1606,21 @@ class VersionBuilder::Rep {
       SaveSSTFilesTo(vstorage, /* level */ 0, *level_zero_cmp_by_epochno_);
     }
 
+    // for (int level = 1; level < num_levels_; ++level) {
+    //   SaveSSTFilesTo(vstorage, level, *level_nonzero_cmp_);
+    // }
+    // Level 1+ 按时间倒序
     for (int level = 1; level < num_levels_; ++level) {
-      SaveSSTFilesTo(vstorage, level, *level_nonzero_cmp_);
+      if (is_level_hash) {
+          if (epoch_number_requirement == EpochNumberRequirement::kMightMissing) {
+              SaveSSTFilesTo(vstorage, level, *level_zero_cmp_by_seqno_);
+          } else {
+              SaveSSTFilesTo(vstorage, level, *level_zero_cmp_by_epochno_);
+          }
+      } else {
+          // 按 Key 排序 
+          SaveSSTFilesTo(vstorage, level, *level_nonzero_cmp_);
+      }
     }
   }
 
