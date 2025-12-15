@@ -146,6 +146,16 @@ void ReaderThread(DB** db_ptr) {
                 s = (*db_ptr)->Get(ReadOptions(), key, &db_val);
             } else if (db_val != expected_val) {
                 std::cout << "[Warn] Stale read: " << key << " got " << db_val << " expect " << expected_val << std::endl;
+                s = (*db_ptr)->Get(ReadOptions(), key, &db_val);
+                std::string num_l0, num_l1, num_l2, num_l3;
+                (*db_ptr)->GetProperty("rocksdb.num-files-at-level0", &num_l0);
+                (*db_ptr)->GetProperty("rocksdb.num-files-at-level1", &num_l1);
+                (*db_ptr)->GetProperty("rocksdb.num-files-at-level2", &num_l2);
+                (*db_ptr)->GetProperty("rocksdb.num-files-at-level3", &num_l3);
+                std::cout << "Final L0 Files: " << num_l0 << std::endl;
+                std::cout << "Final L1 Files: " << num_l1 << std::endl;
+                std::cout << "Final L2 Files: " << num_l2 << std::endl;
+                std::cout << "Final L3 Files: " << num_l3 << std::endl;
             }
         }
     }

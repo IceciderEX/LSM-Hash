@@ -1056,11 +1056,7 @@ Status CompactionJob::RunLevelHashCompaction(uint32_t target_bucket_id) {
       if (output_meta.oldest_ancester_time == std::numeric_limits<uint64_t>::max()) {
           output_meta.oldest_ancester_time = output_meta.file_creation_time;
       }
-      output_meta.epoch_number = c->MinInputFileEpochNumber();
-      if (output_meta.epoch_number == kUnknownEpochNumber) {
-          // old file no epoch
-          output_meta.epoch_number = c->column_family_data()->NewEpochNumber();
-      }
+      output_meta.epoch_number = c->column_family_data()->NewEpochNumber();
       output_meta.temperature = c->GetOutputTemperature(false);
   }
 
@@ -1108,6 +1104,42 @@ Status CompactionJob::RunLevelHashCompaction(uint32_t target_bucket_id) {
   VerifyAndFinalizeLevelHashRun(status, io_stats);
 
   ThreadStatusUtil::ResetThreadStatus();
+
+  if (status.ok()) {
+      // 1. 获取输入文件名称
+      std::string input_files_log = "Input Files: [";
+      auto inputs = compact_->compaction->inputs();
+      for (size_t i = 0; i < inputs->size(); ++i) {
+          const auto& level_files = (*inputs)[i];
+          if (!level_files.empty()) {
+              input_files_log += " Level " + std::to_string(compact_->compaction->start_level() + i) + ": ";
+              for (auto f : level_files.files) {
+                  input_files_log += "#" + std::to_string(f->fd.GetNumber()) + " ";
+              }
+          }
+      }
+      input_files_log += "]";
+
+      // 2. 获取输出文件名称
+      std::string output_files_log = "Output Files: [";
+      // compact_->edit() 包含了本次 Compaction 生成的所有元数据变更
+      // GetNewFiles() 返回 vector<pair<int, FileMetaData>>
+      const auto& new_files = compact_->compaction->edit()->GetNewFiles();
+      for (const auto& new_file_pair : new_files) {
+          const auto& meta = new_file_pair.second;
+          output_files_log += "#" + std::to_string(meta.fd.GetNumber()) + " ";
+      }
+      output_files_log += "]";
+
+      // 3. 打印到 INFO LOG
+      // 使用 ROCKS_LOG_INFO 宏
+      ROCKS_LOG_INFO(db_options_.info_log, 
+          "[%s] [JOB %d] Compaction Finished Details:\n  %s\n  %s",
+          compact_->compaction->column_family_data()->GetName().c_str(), 
+          job_id_, 
+          input_files_log.c_str(), 
+          output_files_log.c_str());
+  }
   return status;
 }
 
@@ -1177,10 +1209,6 @@ void CompactionJob::InitializeLevelHashCompactionRun(uint32_t target_bucket_id) 
   const uint32_t kInitialG = 3; 
   int input_level = c->start_level();
   int output_level = c->output_level();
-
-  if (input_level >= 1 || output_level >= 2) {
-    int dqw = 3;
-  }
   
   uint32_t input_g = kInitialG + input_level;
   uint32_t output_g = kInitialG + output_level;
@@ -1353,9 +1381,6 @@ Status CompactionJob::ProcessLevelHashData(
   if (!s.ok()) return s;
 
   uint64_t file_size = builder->FileSize();
-  if (input_g >= 4) {
-    int dqw = 3;
-  }
   
   if (file_size > 0) {
       output_file_meta->fd = FileDescriptor(file_number, compaction->output_path_id(), file_size);
