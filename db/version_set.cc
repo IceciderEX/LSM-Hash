@@ -2806,6 +2806,15 @@ void Version::Get(const ReadOptions& read_options, const LookupKey& k,
                 bucket_exists = true;
             }
         }
+        
+        // logging levelhash
+        // [TRACE_LOG]
+        fprintf(stderr, "[TRACE_FILTER] Key:%s FileNum:%lu Level:%d Bucket:%u Exists:%d\n", 
+               user_key.ToString().c_str(), 
+               f->fd.GetNumber(), 
+               level, 
+               bucket_idx, 
+               bucket_exists);
 
         // 该 Bucket 不存在，则直接跳过此文件
         if (!bucket_exists) {

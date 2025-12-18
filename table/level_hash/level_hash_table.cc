@@ -56,6 +56,23 @@ LevelHashTableBuilder::~LevelHashTableBuilder() {}
 void LevelHashTableBuilder::Add(const Slice& key, const Slice& value) {
   if (!status_.ok()) return;
 
+  // logging levelhash
+  // 获取 User Key 和 Seq
+  ParsedInternalKey ikey;
+  ParseInternalKey(key, &ikey, false);
+  
+  uint64_t hash_for_log = MurmurHash64A(ikey.user_key.data(), ikey.user_key.size(), 0);
+  uint32_t bucket_idx_for_log = GetBucketIndex(hash_for_log, G_);
+
+  // [TRACE_LOG] 格式：[OP] [Key] [Seq] [Details...]
+  fprintf(stderr, "[TRACE_WRITE] Key:%s Seq:%lu Level:%d G:%u Bucket:%u File:%s\n", 
+          ikey.user_key.ToString().c_str(), 
+          ikey.sequence, 
+          (G_ >= 3 ? G_ - 3 : -1), // 估算 Level
+          G_, 
+          bucket_idx_for_log,
+          (file_ ? file_->file_name().c_str() : "unknown"));
+
   Slice user_key = ExtractUserKey(key);
   uint64_t hash = MurmurHash64A(user_key.data(), user_key.size(), 0);
   uint32_t bucket_idx = GetBucketIndex(hash, G_);
@@ -286,6 +303,21 @@ Status LevelHashTableReader::Get(const ReadOptions& /*read_options*/,
                                  GetContext* get_context,
                                  const SliceTransform* /*prefix_extractor*/,
                                  bool /*skip_filters*/) {
+  // logging levelhash
+  ParsedInternalKey ikey_for_log;
+  ParseInternalKey(key, &ikey_for_log, false);
+  
+  uint64_t hash_for_log = MurmurHash64A(ikey_for_log.user_key.data(), ikey_for_log.user_key.size(), 0);
+  uint32_t bucket_idx_for_log = GetBucketIndex(hash_for_log, G_);
+
+  // [TRACE_LOG]
+  fprintf(stderr, "[TRACE_READ_SEEK] Key:%s SearchLevel:%d G:%u Bucket:%u FileSize:%lu\n", 
+          ikey_for_log.user_key.ToString().c_str(), 
+          (G_ >= 3 ? G_ - 3 : -1), 
+          G_, 
+          bucket_idx_for_log, 
+          file_size_);
+                        
   Slice user_key = ExtractUserKey(key);
   uint64_t hash = MurmurHash64A(user_key.data(), user_key.size(), 0);
   uint32_t bucket_idx = GetBucketIndex(hash, G_);
@@ -338,6 +370,12 @@ Status LevelHashTableReader::Get(const ReadOptions& /*read_options*/,
         // Key 不匹配，继续查看 Bucket 中的下一个 Entry
         continue; 
     }
+    // logging levelhash
+    fprintf(stderr, "[TRACE_READ_FOUND] Key:%s FoundSeq:%lu Bucket:%u FileSize:%lu\n",
+                     ikey_for_log.user_key.ToString().c_str(), 
+                     parsed_key.sequence, 
+                     bucket_idx_for_log, 
+                     file_size_);
     
     // get_context.cc SaveValue —— merge, seqno logic ...
     // 返回 false 意味着找到了最终结果（Found 或 Deleted），应停止搜索

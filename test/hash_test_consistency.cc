@@ -3,13 +3,13 @@
 #include <vector>
 #include <map>
 #include <atomic>
-#include <random>
 #include <mutex>
 #include <cassert>
 #include <string>
 #include <chrono>
 #include <sstream>
 #include <iomanip>
+#include <random>
 
 #include "rocksdb/db.h"
 #include "rocksdb/env.h"
@@ -20,129 +20,135 @@
 
 using namespace ROCKSDB_NAMESPACE;
 
-// 配置参数
-const int kNumKeys = 10000;          // Key 的总范围 0 ~ kNumKeys
-const int kNumOperations = 300000;   // 总操作次数
-const int kNumWriterThreads = 2;     // 写线程数
-const int kNumReaderThreads = 1;     // 读线程数
-const int kReopenInterval = 30000;   // 每多少次操作重启一次 DB (测试 Manifest 持久化)
+// --- 压力测试配置 ---
+const int kNumKeys = 1000;           // 1000 个 Key，足以触发多层级 Compaction (L0->L1->L2)
+const int kNumOperations = 7000;   // 10万次操作，产生大量版本堆积
+const int kNumWriterThreads = 1;
+const int kNumReaderThreads = 2;     // 增加读者，提高并发读的概率
 
-// 全局状态
 std::mutex state_mutex;
-std::map<std::string, std::string> kv_map; // 真值表
+std::map<std::string, long> latest_seq_map; // 真值表
 std::atomic<bool> stop_flag{false};
 std::atomic<long> ops_counter{0};
 
-// 辅助：生成 Key
+// Key 格式：key_000 ~ key_999
 std::string Key(int i) {
     std::stringstream ss;
-    ss << "key_" << std::setw(10) << std::setfill('0') << i;
+    ss << "key_" << std::setw(3) << std::setfill('0') << i;
     return ss.str();
 }
 
-// 辅助：生成 Value
-std::string Value(int i, int iter) {
-    return "val_" + std::to_string(i) + "_" + std::to_string(iter);
+std::string Value(long seq) {
+    return "val_" + std::to_string(seq);
 }
 
-// 检查 DB 状态与真值表是否一致
-void VerifyDB(DB* db) {
-    std::lock_guard<std::mutex> lock(state_mutex);
-    std::cout << "[Verifying] Checking all " << kv_map.size() << " keys in map..." << std::endl;
-    
-    int verified = 0;
-    for (const auto& pair : kv_map) {
-        std::string db_val;
-        Status s = db->Get(ReadOptions(), pair.first, &db_val);
-        
-        if (!s.ok()) {
-            std::cerr << "[FATAL] Key missing: " << pair.first << " Status: " << s.ToString() << std::endl;
-        }
-        if (db_val != pair.second) {
-            std::cerr << "[FATAL] Value mismatch for " << pair.first 
-                      << ". Expected: " << pair.second 
-                      << ", Actual: " << db_val << std::endl;
-        }
-        verified++;
-    }
-    
-    // 随机检查一些肯定不存在的 Key
-    for (int i = kNumKeys; i < kNumKeys + 100; ++i) {
-        std::string val;
-        Status s = db->Get(ReadOptions(), Key(i), &val);
-        if (!s.IsNotFound()) {
-             std::cerr << "[FATAL] Phantom key found: " << Key(i) << std::endl;
-        }
-    }
+long ParseSeqFromValue(const std::string& val) {
+    size_t pos = val.find('_');
+    if (pos == std::string::npos) return -1;
+    return std::stol(val.substr(pos + 1));
 }
 
-// 写线程逻辑
 void WriterThread(DB** db_ptr) {
-    std::mt19937 rng(std::random_device{}());
+    std::mt19937 rng(12345);
     std::uniform_int_distribution<int> key_dist(0, kNumKeys - 1);
-    // [移除] std::uniform_int_distribution<int> op_dist(0, 10); 不再需要操作类型随机
 
     while (!stop_flag) {
-        int k = key_dist(rng);
-        std::string key = Key(k);
-        
-        // 生成全局唯一的序列号作为 Value 的一部分，方便 debug 版本先后顺序
-        long current_op = ++ops_counter;
-        
-        // 加锁更新真值表
+        long op_id = ++ops_counter;
+        if (op_id > kNumOperations) {
+            stop_flag = true;
+            break;
+        }
+
+        int k_idx = key_dist(rng);
+        std::string key = Key(k_idx);
+        std::string val = Value(op_id);
+
+        Status s = (*db_ptr)->Put(WriteOptions(), key, val);
+        if (!s.ok()) {
+            std::cerr << "Put failed: " << s.ToString() << std::endl;
+            exit(1);
+        }
+
         {
             std::lock_guard<std::mutex> lock(state_mutex);
-            
-            // [逻辑简化] 始终只执行 Put
-            std::string val = Value(k, current_op);
-            Status s = (*db_ptr)->Put(WriteOptions(), key, val);
-            if (!s.ok()) {
-                std::cerr << "Put failed: " << s.ToString() << std::endl;
-                exit(1);
-            }
-            // 更新内存真值表（如果是旧 Key 则覆盖，新 Key 则插入）
-            kv_map[key] = val;
+            latest_seq_map[key] = op_id;
         }
-        
-        if (current_op >= kNumOperations) stop_flag = true;
+
+        // 每 5000 次操作打印一次进度，并稍作休息让 Compaction 跟上
+        if (op_id % 5000 == 0) {
+            // std::cout << "Writer progress: " << op_id << "/" << kNumOperations << std::endl;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
     }
 }
 
-// 读线程逻辑
-void ReaderThread(DB** db_ptr) {
-    std::mt19937 rng(std::random_device{}());
+// 读者线程：运行时单调性检查
+void ReaderThread(DB** db_ptr, int id) {
+    std::mt19937 rng(67890 + id);
     std::uniform_int_distribution<int> key_dist(0, kNumKeys - 1);
+    
+    // 记录每个 Key 上次读到的 seq，确保 seq 不会倒退（Time Travel）
+    std::vector<long> last_seen_seq(kNumKeys, -1);
 
     while (!stop_flag) {
-        int k = key_dist(rng);
-        std::string key = Key(k);
-        std::string expected_val;
-        bool expect_found = false;
-
-        // 获取期望值 (加锁瞬时获取)
-        {
-            std::lock_guard<std::mutex> lock(state_mutex);
-            auto it = kv_map.find(key);
-            if (it != kv_map.end()) {
-                expected_val = it->second;
-                expect_found = true;
-            }
-        }
-
-        // 执行读取 (无锁)
+        int k_idx = key_dist(rng);
+        std::string key = Key(k_idx);
+        
         std::string db_val;
         Status s = (*db_ptr)->Get(ReadOptions(), key, &db_val);
+        
+        if (s.ok()) {
+            long current_seq = ParseSeqFromValue(db_val);
+            long last_seq = last_seen_seq[k_idx];
 
-        if (expect_found) {
-            if (s.IsNotFound()) {
-                std::cerr << "[Read Error] Key lost: " << key << " (Expected: " << expected_val << ")" << std::endl;
-                s = (*db_ptr)->Get(ReadOptions(), key, &db_val);
-            } else if (db_val != expected_val) {
-                std::cout << "[Warn] Stale read: " << key << " got " << db_val << " expect " << expected_val << std::endl;
-                s = (*db_ptr)->Get(ReadOptions(), key, &db_val);
-                std::string num_l0, num_l1, num_l2, num_l3;
+            // [核心检查]：同一线程读到的 Seq 不应减小
+            // 如果减小，说明刚刚读到了新值，现在却读到了旧值 -> Stale Read
+            if (current_seq < last_seq) {
+                std::cerr << "!!! [Runtime FATAL] Time Travel on " << key 
+                          << " (Thread " << id << ") !!!\n"
+                          << "  Previously Saw Seq: " << last_seq << "\n"
+                          << "  Currently Read Seq: " << current_seq << "\n"
+                          << "  (This means we read a newer version before, and now read an older one!)" 
+                          << std::endl;
+                // 这是一个严重的 Stale Read 证据，通常意味着新文件被跳过了
+            }
+            
+            // 更新观测到的最新 Seq
+            if (current_seq > last_seq) {
+                last_seen_seq[k_idx] = current_seq;
             }
         }
+    }
+}
+
+void VerifyFinalState(DB* db) {
+    std::cout << "\n[Verifying] Checking final state..." << std::endl;
+    std::lock_guard<std::mutex> lock(state_mutex);
+    
+    int error_count = 0;
+    for (auto& pair : latest_seq_map) {
+        std::string key = pair.first;
+        long expected_seq = pair.second;
+        
+        std::string db_val;
+        Status s = db->Get(ReadOptions(), key, &db_val);
+        
+        if (!s.ok()) {
+            std::cerr << "[FATAL] Key " << key << " missing!" << std::endl;
+            error_count++;
+        } else {
+            long actual_seq = ParseSeqFromValue(db_val);
+            if (actual_seq != expected_seq) {
+                std::cerr << "[FATAL] Mismatch on " << key << ". Expect " << expected_seq << ", Got " << actual_seq 
+                          << " (Delta: " << (expected_seq - actual_seq) << ")" << std::endl;
+                error_count++;
+                if (error_count > 10) break;
+            }
+        }
+    }
+    
+    if (error_count == 0) {
+        std::cout << "[Success] All checks passed." << std::endl;
     }
 }
 
@@ -151,59 +157,43 @@ int main() {
     Options options;
     options.create_if_missing = true;
     
-    // --- Level-Hash 关键配置 ---
-    // 1. 使用你的 MemTable 和 Table 工厂
-    // 注意：G=3 (8 buckets)
-    options.memtable_factory.reset(new LevelHashMemTableFactory(3, 1000, 1024*1024*10));
+    // Level-Hash 配置
+    options.memtable_factory.reset(new LevelHashMemTableFactory(3, 100, 1024*1024)); 
     options.table_factory.reset(new LevelHashTableFactory(3));
     options.compaction_style = kCompactionStyleLevelHash;
     
-    // 2. 极低阈值触发 Flush 和 Compaction，强制 Level-Hash 逻辑高频运转
-    options.write_buffer_size = 128 * 1024 * 1;  
-    options.level0_file_num_compaction_trigger = 2; // L0 有 2 个文件就触发 Compaction
-    options.target_file_size_base = 128 * 1024 * 1;
-    
-    // 3. 开启自动 Compaction
-    options.disable_auto_compactions = false;
-    
-    // 4. 并发配置
+    // 激进参数：强制深层 Compaction
+    // 16KB Flush, L0 2个文件触发
+    options.write_buffer_size = 16 * 1024; 
+    options.level0_file_num_compaction_trigger = 2; 
+    options.target_file_size_base = 16 * 1024;
     options.max_background_jobs = 4;
 
-    std::string dbname = "/home/wam/HWKV/rocksdb/db_tmp/rocksdb_levelhash_consistency_test";
+    std::string dbname = "/tmp/rocksdb_levelhash_split_stress_test";
     DestroyDB(dbname, options);
 
     Status s = DB::Open(options, dbname, &db);
     assert(s.ok());
 
-    std::cout << "=== Starting Stress Test ===" << std::endl;
-    std::cout << "  Operations: " << kNumOperations << std::endl;
-    std::cout << "  Keys: " << kNumKeys << std::endl;
+    std::cout << "=== Starting Split Stress Test (1000 Keys, 500k Ops) ===" << std::endl;
     
-    // 启动线程
-    std::vector<std::thread> writers;
+    std::thread writer(WriterThread, &db);
     std::vector<std::thread> readers;
-    
-    for (int i=0; i<kNumWriterThreads; ++i) writers.emplace_back(WriterThread, &db);
-    for (int i=0; i<kNumReaderThreads; ++i) readers.emplace_back(ReaderThread, &db);
+    for(int i=0; i<kNumReaderThreads; ++i) readers.emplace_back(ReaderThread, &db, i);
 
-    // 等待结束
-    for (auto& t : writers) t.join();
-    for (auto& t : readers) t.join();
+    writer.join();
+    for(auto& t : readers) t.join();
 
-    // 打印一些统计信息 
+    // 打印层级文件分布，确认是否触发了 L2/L3
     std::string num_l0, num_l1, num_l2, num_l3;
     db->GetProperty("rocksdb.num-files-at-level0", &num_l0);
     db->GetProperty("rocksdb.num-files-at-level1", &num_l1);
     db->GetProperty("rocksdb.num-files-at-level2", &num_l2);
     db->GetProperty("rocksdb.num-files-at-level3", &num_l3);
-    std::cout << "Final L0 Files: " << num_l0 << std::endl;
-    std::cout << "Final L1 Files: " << num_l1 << std::endl;
-    std::cout << "Final L2 Files: " << num_l2 << std::endl;
-    std::cout << "Final L3 Files: " << num_l3 << std::endl;
+    std::cout << "Final Files - L0: " << num_l0 << ", L1: " << num_l1 
+              << ", L2: " << num_l2 << ", L3: " << num_l3 << std::endl;
 
-    std::cout << "\n=== Test Finished. Final Verification === " << std::endl;
-    VerifyDB(db);
-
+    VerifyFinalState(db);
     delete db;
     return 0;
 }

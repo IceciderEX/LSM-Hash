@@ -1363,10 +1363,20 @@ Status CompactionJob::ProcessLevelHashData(
     }
 
     for (auto it = kept_versions.rbegin(); it != kept_versions.rend(); ++it) {
+      // logging levelhash
+      ParsedInternalKey ikey;
+      ParseInternalKey(it->internal_key, &ikey, false);
+      
+      fprintf(stderr, "[TRACE_COMPACT] Key:%s Seq:%lu Action:KEEP_AND_WRITE ToLevel:%d\n",
+              ikey.user_key.ToString().c_str(), 
+              ikey.sequence,
+              compact_->compaction->output_level());
+
       builder->Add(it->internal_key, it->value);
       // 同时更新边界 (Smallest/Largest/Seq) 逻辑
       ParsedInternalKey parsed_key;
       ParseInternalKey(it->internal_key, &parsed_key, false); 
+      
       if (parsed_key.sequence < min_seq) min_seq = parsed_key.sequence;
       if (parsed_key.sequence > max_seq) max_seq = parsed_key.sequence;
       
