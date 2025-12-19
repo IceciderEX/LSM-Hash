@@ -993,6 +993,9 @@ Status FlushJob::WriteLevel0Table() {
             meta_.file_checksum = builder->GetFileChecksum();
             meta_.file_checksum_func_name = builder->GetFileChecksumFuncName();
             meta_.valid_bucket_bitmap = level_hash_builder->GetValidBucketBitmap();
+            meta_.buckets_being_compacted = level_hash_builder->GetBucketsBeingCompacted();
+            meta_.level_hash_g = level_hash_builder->GetLevelHashG();
+            meta_.InitBuckets(static_cast<uint32_t>(meta_.level_hash_g));
             
             // Fill boundaries. If table is empty, smallest/largest remain default (empty/invalid),
             // which usually requires handling, but Flush shouldn't produce empty files often.
@@ -1081,7 +1084,7 @@ Status FlushJob::WriteLevel0Table() {
                       meta_.unique_id, meta_.compensated_range_deletion_size,
                       meta_.tail_size, meta_.user_defined_timestamps_persisted,
                       // for levelhash
-                      meta_.valid_bucket_bitmap);
+                      meta_.valid_bucket_bitmap, meta_.buckets_being_compacted, meta_.level_hash_g);
       }
       // Piggyback FlushJobInfo on the first first flushed memtable.
       if (!mems_.empty()) {
@@ -1333,7 +1336,7 @@ Status FlushJob::WriteLevel0Table() {
                    meta_.unique_id, meta_.compensated_range_deletion_size,
                    meta_.tail_size, meta_.user_defined_timestamps_persisted,
                    // for levelhash
-                   meta_.valid_bucket_bitmap);
+                   meta_.valid_bucket_bitmap, meta_.buckets_being_compacted, meta_.level_hash_g);
     edit_->SetBlobFileAdditions(std::move(blob_file_additions));
   }
   // Piggyback FlushJobInfo on the first first flushed memtable.

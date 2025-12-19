@@ -2123,6 +2123,9 @@ Status DBImpl::WriteLevel0TableForRecovery(int job_id, ColumnFamilyData* cfd,
               meta.file_checksum = builder->GetFileChecksum();
               meta.file_checksum_func_name = builder->GetFileChecksumFuncName();
               meta.valid_bucket_bitmap = level_hash_builder->GetValidBucketBitmap();
+              meta.buckets_being_compacted = level_hash_builder->GetBucketsBeingCompacted();
+              meta.level_hash_g = level_hash_builder->GetLevelHashG();
+              meta.InitBuckets(static_cast<uint32_t>(meta.level_hash_g));
 
               if (first_key_found) {
                   meta.smallest = smallest_key;
@@ -2165,7 +2168,7 @@ Status DBImpl::WriteLevel0TableForRecovery(int job_id, ColumnFamilyData* cfd,
                   meta.file_checksum, meta.file_checksum_func_name,
                   meta.unique_id, meta.compensated_range_deletion_size,
                   meta.tail_size, meta.user_defined_timestamps_persisted,
-                  meta.valid_bucket_bitmap);
+                  meta.valid_bucket_bitmap, meta.buckets_being_compacted, meta.level_hash_g);
       }
       
       ReleaseFileNumberFromPendingOutputs(pending_outputs_inserted_elem);

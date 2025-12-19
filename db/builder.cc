@@ -343,6 +343,9 @@ Status BuildTable(
         if (level_hash_builder) {
           // 提取位图并保存到 FileMetaData (meta) 中
           meta->valid_bucket_bitmap = level_hash_builder->GetValidBucketBitmap();
+          meta->buckets_being_compacted = level_hash_builder->GetBucketsBeingCompacted();
+          meta->level_hash_g = level_hash_builder->GetLevelHashG();
+          meta->InitBuckets(static_cast<uint32_t>(meta->level_hash_g));
         }
       }
     }

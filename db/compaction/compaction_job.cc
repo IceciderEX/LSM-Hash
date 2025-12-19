@@ -1410,6 +1410,9 @@ Status CompactionJob::ProcessLevelHashData(
       auto* hash_builder = dynamic_cast<LevelHashTableBuilder*>(builder.get());
       if (hash_builder) {
           output_file_meta->valid_bucket_bitmap = hash_builder->GetValidBucketBitmap();
+          output_file_meta->buckets_being_compacted = hash_builder->GetBucketsBeingCompacted();
+          output_file_meta->level_hash_g = hash_builder->GetLevelHashG();
+          output_file_meta->InitBuckets(static_cast<uint32_t>(output_file_meta->level_hash_g));
       }
       if (table_properties) {
           *table_properties = std::make_shared<TableProperties>(builder->GetTableProperties());

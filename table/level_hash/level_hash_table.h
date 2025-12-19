@@ -244,6 +244,12 @@ class LevelHashTableBuilder : public TableBuilder {
   const std::vector<uint64_t>& GetValidBucketBitmap() const {
     return valid_bucket_bitmap_;
   }
+  const std::vector<bool>& GetBucketsBeingCompacted() const {
+    return buckets_being_compacted_;
+  }
+  uint64_t GetLevelHashG() const {
+    return G_;
+  }
 
  private:
   const TableBuilderOptions& tb_options_;
@@ -257,6 +263,8 @@ class LevelHashTableBuilder : public TableBuilder {
 
   std::vector<std::vector<std::pair<std::string, std::string>>> buffer_;
   std::vector<uint64_t> valid_bucket_bitmap_;
+  std::vector<bool> buckets_being_compacted_;
+
   // 缓存 TableProperties
   TableProperties properties_;
 };

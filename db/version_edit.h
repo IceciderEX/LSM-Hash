@@ -116,7 +116,9 @@ enum NewFileCustomTag : uint32_t {
   kUserDefinedTimestampsPersisted = 16,
 
   // for levelhash
-  kValidBucketBitmap = 20,  
+  kValidBucketBitmap = 20, 
+  kBucketsBeingCompacted = 21,
+  kLevelHashG = 22,
 
   // If this bit for the custom tag is set, opening DB should fail if
   // we don't know this field.
@@ -285,11 +287,40 @@ struct FileMetaData {
   // for levelhash
   std::vector<uint64_t> valid_bucket_bitmap;
 
+  size_t level_hash_g = 0;
+
   bool HasBucket(uint32_t bucket_id) const {
     size_t idx = bucket_id / 64;
     size_t bit = bucket_id % 64;
     if (idx >= valid_bucket_bitmap.size()) return false;
     return (valid_bucket_bitmap[idx] & (1ULL << bit)) != 0;
+  }
+
+  std::vector<bool> buckets_being_compacted;
+
+  void InitBuckets(uint32_t g) {
+      level_hash_g = g;
+      size_t num = 1 << g;
+      if (buckets_being_compacted.size() != num) {
+          buckets_being_compacted.assign(num, false);
+      }
+  }
+
+  bool IsBucketLocked(uint32_t bucket_idx) const {
+      if (bucket_idx >= buckets_being_compacted.size()) return false;
+      return buckets_being_compacted[bucket_idx];
+  }
+
+  void SetBucketLock(uint32_t bucket_idx, bool lock_state) {
+      if (bucket_idx < buckets_being_compacted.size()) {
+          buckets_being_compacted[bucket_idx] = lock_state;
+      }
+  }
+
+  void UnlockBucket(uint32_t bucket_idx) {
+    if (bucket_idx < buckets_being_compacted.size()) {
+      buckets_being_compacted[bucket_idx] = false;
+    }
   }
   // -----------------------
 
@@ -307,7 +338,9 @@ struct FileMetaData {
                const uint64_t _compensated_range_deletion_size,
                uint64_t _tail_size, bool _user_defined_timestamps_persisted,
                // for levelhash
-               const std::vector<uint64_t>& _valid_bucket_bitmap = {})
+               const std::vector<uint64_t>& _valid_bucket_bitmap = {},
+               const std::vector<bool>& _buckets_being_compacted = {},
+               uint64_t _level_hash_g = 0)
       : fd(file, file_path_id, file_size, smallest_seq, largest_seq),
         smallest(smallest_key),
         largest(largest_key),
@@ -324,7 +357,9 @@ struct FileMetaData {
         tail_size(_tail_size),
         user_defined_timestamps_persisted(_user_defined_timestamps_persisted),
         // for levelhash
-        valid_bucket_bitmap(_valid_bucket_bitmap) {
+        valid_bucket_bitmap(_valid_bucket_bitmap),
+        buckets_being_compacted(_buckets_being_compacted),
+        level_hash_g(_level_hash_g) {
     TEST_SYNC_POINT_CALLBACK("FileMetaData::FileMetaData", this);
   }
 
@@ -760,7 +795,9 @@ class VersionEdit {
                const uint64_t compensated_range_deletion_size,
                uint64_t tail_size, bool user_defined_timestamps_persisted,
                // for levelhash
-               const std::vector<uint64_t>& valid_bucket_bitmap = {}) {
+               const std::vector<uint64_t>& valid_bucket_bitmap = {},
+               const std::vector<bool>& buckets_being_compacted = {},
+               uint64_t level_hash_g = 0) {
     assert(smallest_seqno <= largest_seqno);
     new_files_.emplace_back(
         level,
@@ -770,7 +807,8 @@ class VersionEdit {
                      file_creation_time, epoch_number, file_checksum,
                      file_checksum_func_name, unique_id,
                      compensated_range_deletion_size, tail_size,
-                     user_defined_timestamps_persisted, valid_bucket_bitmap));
+                     user_defined_timestamps_persisted, valid_bucket_bitmap,
+                     buckets_being_compacted, level_hash_g));
     files_to_quarantine_.push_back(file);
     if (!HasLastSequence() || largest_seqno > GetLastSequence()) {
       SetLastSequence(largest_seqno);

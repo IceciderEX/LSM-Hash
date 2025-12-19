@@ -7176,7 +7176,7 @@ Status VersionSet::WriteCurrentStateToManifest(
                        f->file_checksum_func_name, f->unique_id,
                        f->compensated_range_deletion_size, f->tail_size,
                        f->user_defined_timestamps_persisted, 
-                       f->valid_bucket_bitmap);
+                       f->valid_bucket_bitmap, f->buckets_being_compacted, f->level_hash_g);
         }
       }
 

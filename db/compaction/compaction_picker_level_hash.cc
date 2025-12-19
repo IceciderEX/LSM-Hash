@@ -72,9 +72,9 @@ Compaction* LevelHashCompactionPicker::PickCompaction(
       // 2. 当前层级每个 bucket 有多少个有效的 sst
       std::map<uint32_t, std::vector<FileMetaData*>> bucket_to_files;
       for (FileMetaData* f : level_files) {
-        if (f->being_compacted) {
-          continue;
-        }
+        // if (f->being_compacted) {
+        //   continue;
+        // }
         // Bitmap
         for (size_t i = 0; i < f->valid_bucket_bitmap.size(); ++i) {
           uint64_t word = f->valid_bucket_bitmap[i];
@@ -107,6 +107,20 @@ Compaction* LevelHashCompactionPicker::PickCompaction(
           auto it = bucket_to_files.find(curr_bucket);
           if (it != bucket_to_files.end()) {
               size_t file_count = it->second.size();
+              // 是否有其他文件正在 compaction 此 bucket
+              std::vector<FileMetaData*>& candidates = it->second;
+              bool bucket_busy = false;
+              for (FileMetaData* f : candidates) {
+                  if (f->IsBucketLocked(curr_bucket)) { 
+                      bucket_busy = true;
+                      break; 
+                  }
+              }
+
+              if (bucket_busy) {
+                  continue; 
+              }
+
               // 目前的逻辑：bucket
               if (file_count >= trigger_threshold) {
                   target_bucket = curr_bucket;

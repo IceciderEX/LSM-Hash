@@ -40,6 +40,9 @@ Status CompactionOutputs::Finish(
       auto* level_hash_builder = dynamic_cast<LevelHashTableBuilder*>(builder_.get());
       if (level_hash_builder) {
         meta->valid_bucket_bitmap = level_hash_builder->GetValidBucketBitmap();
+        meta->buckets_being_compacted = level_hash_builder->GetBucketsBeingCompacted();
+        meta->level_hash_g = level_hash_builder->GetLevelHashG();
+        meta->InitBuckets(static_cast<uint32_t>(meta->level_hash_g));
       }
     }
 

@@ -323,6 +323,11 @@ void VersionEdit::EncodeToNewFile4(const FileMetaData& f, int level,
     }
     PutLengthPrefixedSlice(dst, Slice(bytes));
   }
+  if (f.level_hash_g > 0) {
+    PutVarint32(dst, NewFileCustomTag::kLevelHashG);
+    PutVarint64(dst, f.level_hash_g);
+  }
+
   TEST_SYNC_POINT_CALLBACK("VersionEdit::EncodeTo:NewFile4:CustomizeFields",
                            dst);
 
@@ -475,6 +480,13 @@ const char* VersionEdit::DecodeNewFile4From(Slice* input, int& max_level,
           }
           break;
         }
+        case kLevelHashG:
+            // 1. 使用 GetVarint64 读取 uint64 类型的 G
+          if (!GetVarint64(&field, &f.level_hash_g)) {
+            return "invalid level hash G";
+          }
+          f.InitBuckets(static_cast<uint32_t>(f.level_hash_g));
+          break;
         default:
           if ((custom_tag & kCustomTagNonSafeIgnoreMask) != 0) {
             // Should not proceed if cannot understand it
