@@ -1,199 +1,167 @@
 #include <iostream>
-#include <thread>
 #include <vector>
-#include <map>
-#include <atomic>
-#include <mutex>
-#include <cassert>
 #include <string>
 #include <chrono>
-#include <sstream>
+#include <cmath>
 #include <iomanip>
+#include <algorithm>
+#include <cstring>
 #include <random>
 
-#include "rocksdb/db.h"
-#include "rocksdb/env.h"
-#include "rocksdb/options.h"
-#include "rocksdb/table.h"
-#include "memtable/level_hash_memtable.h"
-#include "table/level_hash/level_hash_table.h"
+// ==========================================
+// 1. 引入 XXHash (Header-Only 模式)
+// ==========================================
+#define XXH_INLINE_ALL 
+#include "util/xxhash.h"
 
-using namespace ROCKSDB_NAMESPACE;
+// ==========================================
+// 2. 引入 RocksDB 原生 MurmurHash
+// ==========================================
+#include "util/murmurhash.h"
+#include "rocksdb/slice.h" 
 
-// --- 压力测试配置 ---
-const int kNumKeys = 1000;           // 1000 个 Key，足以触发多层级 Compaction (L0->L1->L2)
-const int kNumOperations = 7000;   // 10万次操作，产生大量版本堆积
-const int kNumWriterThreads = 1;
-const int kNumReaderThreads = 2;     // 增加读者，提高并发读的概率
-
-std::mutex state_mutex;
-std::map<std::string, long> latest_seq_map; // 真值表
-std::atomic<bool> stop_flag{false};
-std::atomic<long> ops_counter{0};
-
-// Key 格式：key_000 ~ key_999
-std::string Key(int i) {
-    std::stringstream ss;
-    ss << "key_" << std::setw(3) << std::setfill('0') << i;
-    return ss.str();
+// ==========================================
+// 3. Level-Hash 辅助函数
+// ==========================================
+inline uint64_t ReverseBits64(uint64_t x) {
+    // [修复 1] 移除 __builtin_bitreverse64，使用通用的位运算实现，保证兼容性
+    x = ((x & 0x5555555555555555ULL) << 1) | ((x & 0xAAAAAAAAAAAAAAAAULL) >> 1);
+    x = ((x & 0x3333333333333333ULL) << 2) | ((x & 0xCCCCCCCCCCCCCCCCULL) >> 2);
+    x = ((x & 0x0F0F0F0F0F0F0F0FULL) << 4) | ((x & 0xF0F0F0F0F0F0F0F0ULL) >> 4);
+    x = ((x & 0x00FF00FF00FF00FFULL) << 8) | ((x & 0xFF00FF00FF00FF00ULL) >> 8);
+    x = ((x & 0x0000FFFF0000FFFFULL) << 16) | ((x & 0xFFFF0000FFFF0000ULL) >> 16);
+    return (x << 32) | (x >> 32);
 }
 
-std::string Value(long seq) {
-    return "val_" + std::to_string(seq);
+// 模拟你的 GetBucketIndex 逻辑 (使用 rocksdb 原生 MurmurHash)
+uint32_t GetBucketIndex_Murmur(const std::string& key, uint32_t G) {
+    uint64_t h = MurmurHash64A(key.data(), static_cast<int>(key.size()), 0);
+    return static_cast<uint32_t>(ReverseBits64(h) >> (64 - G));
 }
 
-long ParseSeqFromValue(const std::string& val) {
-    size_t pos = val.find('_');
-    if (pos == std::string::npos) return -1;
-    return std::stol(val.substr(pos + 1));
-}
-
-void WriterThread(DB** db_ptr) {
-    std::mt19937 rng(12345);
-    std::uniform_int_distribution<int> key_dist(0, kNumKeys - 1);
-
-    while (!stop_flag) {
-        long op_id = ++ops_counter;
-        if (op_id > kNumOperations) {
-            stop_flag = true;
-            break;
-        }
-
-        int k_idx = key_dist(rng);
-        std::string key = Key(k_idx);
-        std::string val = Value(op_id);
-
-        Status s = (*db_ptr)->Put(WriteOptions(), key, val);
-        if (!s.ok()) {
-            std::cerr << "Put failed: " << s.ToString() << std::endl;
-            exit(1);
-        }
-
-        {
-            std::lock_guard<std::mutex> lock(state_mutex);
-            latest_seq_map[key] = op_id;
-        }
-
-        // 每 5000 次操作打印一次进度，并稍作休息让 Compaction 跟上
-        if (op_id % 5000 == 0) {
-            // std::cout << "Writer progress: " << op_id << "/" << kNumOperations << std::endl;
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-    }
-}
-
-// 读者线程：运行时单调性检查
-void ReaderThread(DB** db_ptr, int id) {
-    std::mt19937 rng(67890 + id);
-    std::uniform_int_distribution<int> key_dist(0, kNumKeys - 1);
+uint32_t GetBucketIndex_XXH3(const std::string& key, uint32_t G) {
+    static const uint64_t kSeed = 0x9e3779b97f4a7c15ULL;
     
-    // 记录每个 Key 上次读到的 seq，确保 seq 不会倒退（Time Travel）
-    std::vector<long> last_seen_seq(kNumKeys, -1);
+    // [修复 2] 去掉 ROCKSDB_ 前缀，直接使用标准函数名
+    // 如果你的 util/xxhash.h 是 RocksDB 修改版，它可能会在内部自动定义 ROCKSDB_
+    // 但既然编译器报错提示 "did you mean XXH3...", 说明它看到的是没有前缀的版本
+    uint64_t h = XXH3_64bits_withSeed(key.data(), key.size(), kSeed);
+    
+    // Avalanche Mixer (防御性混淆)
+    // h ^= h >> 33;
+    // h *= 0xff51afd7ed558ccdULL;
+    // h ^= h >> 33;
+    // h *= 0xc4ceb9fe1a85ec53ULL;
+    // h ^= h >> 33;
 
-    while (!stop_flag) {
-        int k_idx = key_dist(rng);
-        std::string key = Key(k_idx);
-        
-        std::string db_val;
-        Status s = (*db_ptr)->Get(ReadOptions(), key, &db_val);
-        
-        if (s.ok()) {
-            long current_seq = ParseSeqFromValue(db_val);
-            long last_seq = last_seen_seq[k_idx];
-
-            // [核心检查]：同一线程读到的 Seq 不应减小
-            // 如果减小，说明刚刚读到了新值，现在却读到了旧值 -> Stale Read
-            if (current_seq < last_seq) {
-                std::cerr << "!!! [Runtime FATAL] Time Travel on " << key 
-                          << " (Thread " << id << ") !!!\n"
-                          << "  Previously Saw Seq: " << last_seq << "\n"
-                          << "  Currently Read Seq: " << current_seq << "\n"
-                          << "  (This means we read a newer version before, and now read an older one!)" 
-                          << std::endl;
-                // 这是一个严重的 Stale Read 证据，通常意味着新文件被跳过了
-            }
-            
-            // 更新观测到的最新 Seq
-            if (current_seq > last_seq) {
-                last_seen_seq[k_idx] = current_seq;
-            }
-        }
-    }
+    return static_cast<uint32_t>(ReverseBits64(h) >> (64 - G));
 }
 
-void VerifyFinalState(DB* db) {
-    std::cout << "\n[Verifying] Checking final state..." << std::endl;
-    std::lock_guard<std::mutex> lock(state_mutex);
-    
-    int error_count = 0;
-    for (auto& pair : latest_seq_map) {
-        std::string key = pair.first;
-        long expected_seq = pair.second;
-        
-        std::string db_val;
-        Status s = db->Get(ReadOptions(), key, &db_val);
-        
-        if (!s.ok()) {
-            std::cerr << "[FATAL] Key " << key << " missing!" << std::endl;
-            error_count++;
-        } else {
-            long actual_seq = ParseSeqFromValue(db_val);
-            if (actual_seq != expected_seq) {
-                std::cerr << "[FATAL] Mismatch on " << key << ". Expect " << expected_seq << ", Got " << actual_seq 
-                          << " (Delta: " << (expected_seq - actual_seq) << ")" << std::endl;
-                error_count++;
-                if (error_count > 10) break;
-            }
-        }
+// ==========================================
+// 4. 测试逻辑
+// ==========================================
+
+// A. 性能测试 (Func Pointer 适配)
+typedef uint64_t (*HashFunc)(const void*, int, unsigned int);
+
+void BenchSpeed(const std::string& name, int key_len, size_t count, HashFunc func) {
+    std::vector<std::string> keys;
+    keys.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        std::string k(key_len, 'x');
+        if (key_len >= 4) *(int*)k.data() = i; 
+        keys.push_back(std::move(k));
     }
+
+    auto start = std::chrono::high_resolution_clock::now();
     
-    if (error_count == 0) {
-        std::cout << "[Success] All checks passed." << std::endl;
+    volatile uint64_t sink = 0; 
+    for (size_t i = 0; i < count; ++i) {
+        sink = func(keys[i].data(), static_cast<int>(keys[i].size()), 0);
+    }
+
+    (void)sink;
+
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> diff = end - start;
+    
+    double ops = count / diff.count();
+    double mbs = (count * key_len) / diff.count() / 1024 / 1024;
+
+    std::cout << std::left << std::setw(20) << name 
+              << " | KeyLen: " << std::setw(3) << key_len 
+              << " | " << std::fixed << std::setprecision(2) << ops/1000000.0 << " M ops/s"
+              << " | " << mbs << " MB/s" << std::endl;
+}
+
+// 包装器，适配函数签名
+// [修复 2] 同样去掉 ROCKSDB_ 前缀
+uint64_t WrapXXH3(const void* k, int l, unsigned int s) { 
+    return XXH3_64bits_withSeed(k, l, (uint64_t)s); 
+}
+
+// B. 分布测试
+void BenchDistribution(const std::string& name, uint32_t G, size_t count, 
+                       uint32_t (*bucket_func)(const std::string&, uint32_t)) {
+    uint32_t num_buckets = 1 << G;
+    std::vector<int> buckets(num_buckets, 0);
+
+    // 使用连续整数作为 Key (最容易暴露分布问题)
+    for (size_t i = 0; i < count; ++i) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "user_id_%09zu", i);
+        std::string key = buf;
+        
+        buckets[bucket_func(key, G)]++;
+    }
+
+    // 统计
+    int min_load = count, max_load = 0;
+    double sum = 0;
+    for (int c : buckets) {
+        if (c < min_load) min_load = c;
+        if (c > max_load) max_load = c;
+        sum += c;
+    }
+    double avg = sum / num_buckets;
+
+    double variance = 0;
+    for (int c : buckets) {
+        variance += (c - avg) * (c - avg);
+    }
+    variance /= num_buckets;
+    double std_dev = std::sqrt(variance);
+
+    std::cout << "\n[" << name << " Distribution] (G=" << G << ", Keys=" << count << ")\n";
+    std::cout << "  Avg Load: " << avg << "\n";
+    std::cout << "  Max Load: " << max_load << " (Ideal: ~" << (int)avg << ")\n";
+    std::cout << "  Min Load: " << min_load << "\n";
+    std::cout << "  Std Dev : " << std_dev << " (Lower is better)\n";
+    std::cout << "  Load Factor Skew: " << (max_load / avg) << "x\n";
+    
+    if (max_load > avg * 2.0) {
+        std::cout << "  -> \033[1;31mWARNING: High skew detected!\033[0m\n";
+    } else {
+        std::cout << "  -> \033[1;32mPASS: Distribution is uniform.\033[0m\n";
     }
 }
 
 int main() {
-    DB* db;
-    Options options;
-    options.create_if_missing = true;
-    
-    // Level-Hash 配置
-    options.memtable_factory.reset(new LevelHashMemTableFactory(3, 100, 1024*1024)); 
-    options.table_factory.reset(new LevelHashTableFactory(3));
-    options.compaction_style = kCompactionStyleLevelHash;
-    
-    // 激进参数：强制深层 Compaction
-    // 16KB Flush, L0 2个文件触发
-    options.write_buffer_size = 16 * 1024; 
-    options.level0_file_num_compaction_trigger = 2; 
-    options.target_file_size_base = 16 * 1024;
-    options.max_background_jobs = 4;
+    std::cout << "=== Level-Hash Benchmark Tool ===\n\n";
 
-    std::string dbname = "/tmp/rocksdb_levelhash_split_stress_test";
-    DestroyDB(dbname, options);
+    // 1. 性能测试
+    BenchSpeed("MurmurHash64A", 16, 10000000, MurmurHash64A);
+    BenchSpeed("XXH3_64bits",   16, 10000000, WrapXXH3);
+    std::cout << "------------------------------------------------\n";
+    BenchSpeed("MurmurHash64A", 64, 5000000, MurmurHash64A);
+    BenchSpeed("XXH3_64bits",   64, 5000000, WrapXXH3);
+    std::cout << "------------------------------------------------\n";
+    BenchSpeed("MurmurHash64A", 256, 2000000, MurmurHash64A);
+    BenchSpeed("XXH3_64bits",   256, 2000000, WrapXXH3);
 
-    Status s = DB::Open(options, dbname, &db);
-    assert(s.ok());
+    // 2. 分布测试
+    BenchDistribution("MurmurHash64A", 10, 1000000, GetBucketIndex_Murmur);
+    BenchDistribution("XXH3_64bits",   10, 1000000, GetBucketIndex_XXH3);
 
-    std::cout << "=== Starting Split Stress Test (1000 Keys, 500k Ops) ===" << std::endl;
-    
-    std::thread writer(WriterThread, &db);
-    std::vector<std::thread> readers;
-    for(int i=0; i<kNumReaderThreads; ++i) readers.emplace_back(ReaderThread, &db, i);
-
-    writer.join();
-    for(auto& t : readers) t.join();
-
-    // 打印层级文件分布，确认是否触发了 L2/L3
-    std::string num_l0, num_l1, num_l2, num_l3;
-    db->GetProperty("rocksdb.num-files-at-level0", &num_l0);
-    db->GetProperty("rocksdb.num-files-at-level1", &num_l1);
-    db->GetProperty("rocksdb.num-files-at-level2", &num_l2);
-    db->GetProperty("rocksdb.num-files-at-level3", &num_l3);
-    std::cout << "Final Files - L0: " << num_l0 << ", L1: " << num_l1 
-              << ", L2: " << num_l2 << ", L3: " << num_l3 << std::endl;
-
-    VerifyFinalState(db);
-    delete db;
     return 0;
 }

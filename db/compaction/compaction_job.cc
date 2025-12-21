@@ -1364,13 +1364,13 @@ Status CompactionJob::ProcessLevelHashData(
 
     for (auto it = kept_versions.rbegin(); it != kept_versions.rend(); ++it) {
       // logging levelhash
-      ParsedInternalKey ikey;
-      ParseInternalKey(it->internal_key, &ikey, false);
+      // ParsedInternalKey ikey;
+      // ParseInternalKey(it->internal_key, &ikey, false);
       
-      fprintf(stderr, "[TRACE_COMPACT] Key:%s Seq:%lu Action:KEEP_AND_WRITE ToLevel:%d\n",
-              ikey.user_key.ToString().c_str(), 
-              ikey.sequence,
-              compact_->compaction->output_level());
+      // fprintf(stderr, "[TRACE_COMPACT] Key:%s Seq:%lu Action:KEEP_AND_WRITE ToLevel:%d\n",
+      //         ikey.user_key.ToString().c_str(), 
+      //         ikey.sequence,
+      //         compact_->compaction->output_level());
 
       builder->Add(it->internal_key, it->value);
       // 同时更新边界 (Smallest/Largest/Seq) 逻辑
@@ -2913,6 +2913,19 @@ Status CompactionJob::OpenCompactionOutputFile(SubcompactionState* sub_compact,
 }
 
 void CompactionJob::CleanupCompaction() {
+  if (compact_ != nullptr && compact_->compaction != nullptr) {
+    uint32_t bucket_id = compact_->compaction->GetTargetBucketId();
+
+    if (bucket_id != Compaction::kInvalidBucketId) {
+       const auto* inputs = compact_->compaction->inputs();
+       for (const auto& level_files : *inputs) {
+           for (FileMetaData* f : level_files.files) {
+               f->SetBucketLock(bucket_id, false);
+           }
+       }
+    }
+  }
+
   for (SubcompactionState& sub_compact : compact_->sub_compact_states) {
     sub_compact.Cleanup(table_cache_.get());
   }

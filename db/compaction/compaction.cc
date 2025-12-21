@@ -729,12 +729,13 @@ bool Compaction::KeyRangeNotExistsBeyondOutputLevel(
 
 // Mark (or clear) each file that is being compacted
 void Compaction::MarkFilesBeingCompacted(bool being_compacted) const {
-  for (size_t i = 0; i < num_input_levels(); i++) {
-    for (size_t j = 0; j < inputs_[i].size(); j++) {
-      assert(being_compacted != inputs_[i][j]->being_compacted);
-      inputs_[i][j]->being_compacted = being_compacted;
-    }
-  }
+  // for levelhash
+  // for (size_t i = 0; i < num_input_levels(); i++) {
+  //   for (size_t j = 0; j < inputs_[i].size(); j++) {
+  //     assert(being_compacted != inputs_[i][j]->being_compacted);
+  //     inputs_[i][j]->being_compacted = being_compacted;
+  //   }
+  // }
 }
 
 // Sample output:

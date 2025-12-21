@@ -149,6 +149,10 @@ Compaction* LevelHashCompactionPicker::PickCompaction(
               vstorage, mutable_cf_options, output_level, 1);
           CompressionOptions compression_opts = GetCompressionOptions(
               mutable_cf_options, vstorage, output_level);
+            
+          for (FileMetaData* f : inputs.files) {
+              f->SetBucketLock(target_bucket, true);
+          }
 
           auto c = new Compaction(
               vstorage, 

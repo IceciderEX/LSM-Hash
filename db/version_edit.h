@@ -287,8 +287,6 @@ struct FileMetaData {
   // for levelhash
   std::vector<uint64_t> valid_bucket_bitmap;
 
-  size_t level_hash_g = 0;
-
   bool HasBucket(uint32_t bucket_id) const {
     size_t idx = bucket_id / 64;
     size_t bit = bucket_id % 64;
@@ -297,6 +295,8 @@ struct FileMetaData {
   }
 
   std::vector<bool> buckets_being_compacted;
+
+  size_t level_hash_g = 0;
 
   void InitBuckets(uint32_t g) {
       level_hash_g = g;
