@@ -42,6 +42,8 @@ class LevelHashMemTable : public MemTableRep {
 
   bool NeedFlush() const { return flush_requested_.load(std::memory_order_relaxed); }
 
+  void InsertConcurrently(KeyHandle handle) override;
+
   uint32_t GetG() const { return G_; }
 
   const std::vector<std::unique_ptr<Bucket>>& GetBuckets() const {

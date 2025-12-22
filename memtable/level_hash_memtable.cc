@@ -134,7 +134,10 @@ bool LevelHashMemTable::Contains(const char* key) const {
   return false;
 }
 
-// TODO: InsertConcurrently
+void LevelHashMemTable::InsertConcurrently(KeyHandle handle) {
+  Insert(handle);
+}
+
 void LevelHashMemTable::Get(const LookupKey& k, void* callback_args,
                             bool (*callback_func)(void* arg, const char* entry)) {
   Slice user_key = k.user_key();

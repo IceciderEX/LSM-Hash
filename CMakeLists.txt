@@ -1706,3 +1706,6 @@ target_link_libraries(level_hash_test rocksdb testharness gtest ${THIRDPARTY_LIB
 
 add_executable(level_hash_test_consistency test/hash_test_consistency.cc db/db_test_util.cc)
 target_link_libraries(level_hash_test_consistency rocksdb testharness gtest ${THIRDPARTY_LIBS} ${SYSTEM_LIBS})
+
+add_executable(level_hash_test_reopen test/hash_reopen_test.cc db/db_test_util.cc)
+target_link_libraries(level_hash_test_reopen rocksdb testharness gtest ${THIRDPARTY_LIBS} ${SYSTEM_LIBS})
