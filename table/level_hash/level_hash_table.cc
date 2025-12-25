@@ -39,7 +39,6 @@ LevelHashTableBuilder::LevelHashTableBuilder(
       io_status_(IOStatus::OK()),
       num_entries_(0) {
   // 使用 context 获取 current_level
-  // TODO：检查是否生效
   const auto& context = static_cast<const TablePropertiesCollectorFactory::Context&>(tb_options);
   int current_level = (context.level_at_creation == TablePropertiesCollectorFactory::Context::kUnknownLevelAtCreation) 
                       ? 0 
@@ -64,26 +63,16 @@ void LevelHashTableBuilder::Add(const Slice& key, const Slice& value) {
   uint64_t hash_for_log = MurmurHash64A(ikey.user_key.data(), ikey.user_key.size(), 0);
   uint32_t bucket_idx_for_log = GetBucketIndex(hash_for_log, G_);
 
-  // [TRACE_LOG] 格式：[OP] [Key] [Seq] [Details...]
-  // fprintf(stderr, "[TRACE_WRITE] Key:%s Seq:%lu Level:%d G:%u Bucket:%u File:%s\n", 
-  //         ikey.user_key.ToString().c_str(), 
-  //         ikey.sequence, 
-  //         (G_ >= 3 ? G_ - 3 : -1), // 估算 Level
-  //         G_, 
-  //         bucket_idx_for_log,
-  //         (file_ ? file_->file_name().c_str() : "unknown"));
-
   Slice user_key = ExtractUserKey(key);
   uint64_t hash = MurmurHash64A(user_key.data(), user_key.size(), 0);
   uint32_t bucket_idx = GetBucketIndex(hash, G_);
 
   try {
-    // TODO: 考虑内存中进行该操作的占用问题
+    // TODO: 考虑内存中进行该操作的占用问题？
     // 对于 Compaction (L1+)： 如果后续 Compaction 也复用这个 Builder， 感觉会 oom
     buffer_[bucket_idx].emplace_back(key.ToString(), value.ToString());
     num_entries_++;
     
-    // 更新简单的 Properties
     properties_.num_entries++;
     properties_.raw_key_size += key.size();
     properties_.raw_value_size += value.size();
@@ -156,7 +145,7 @@ Status LevelHashTableBuilder::Finish() {
   
   if (!status_.ok()) {
       if (status_.IsIOError()) {
-         // 这是一个简化的转换，实际应根据 Status 细节构建
+         // 先简化转换
          io_status_ = IOStatus::IOError(status_.ToString());
       } else {
          io_status_ = IOStatus::OK();
@@ -415,6 +404,7 @@ size_t LevelHashTableReader::ApproximateMemoryUsage() const {
   return bucket_offsets_.capacity() * sizeof(uint64_t);
 }
 
+// 暂未启用
 InternalIterator* LevelHashTableReader::NewIterator(
     const ReadOptions& /*read_options*/, const SliceTransform* /*prefix_extractor*/,
     Arena* arena, bool /*skip_filters*/, TableReaderCaller /*caller*/,

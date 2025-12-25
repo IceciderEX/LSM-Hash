@@ -55,12 +55,13 @@ void SyncPoint::Process(const Slice& point, void* cb_arg) {
 }
 
 }  // namespace ROCKSDB_NAMESPACE
-#endif  // NDEBUG
 
 namespace ROCKSDB_NAMESPACE {
 void SetupSyncPointsToMockDirectIO() {
+/**
 #if !defined(NDEBUG) && !defined(OS_MACOSX) && !defined(OS_WIN) && \
     !defined(OS_SOLARIS) && !defined(OS_AIX) && !defined(OS_OPENBSD)
+ */
   ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
       "NewWritableFile:O_DIRECT", [&](void* arg) {
         int* val = static_cast<int*>(arg);
@@ -77,6 +78,8 @@ void SetupSyncPointsToMockDirectIO() {
         *val &= ~O_DIRECT;
       });
   ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
-#endif
+// #endif
 }
 }  // namespace ROCKSDB_NAMESPACE
+
+#endif  // NDEBUG

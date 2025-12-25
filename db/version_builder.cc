@@ -1074,16 +1074,16 @@ class VersionBuilder::Rep {
       return nullptr;
     }
     const auto& level_state = levels_[level];
-    // 1. 当前 Edit 过程
+    // 当前 Edit
     auto add_it = level_state.added_files.find(file_number);
     if (add_it != level_state.added_files.end()) {
       return add_it->second;
     }
-    // 2. 检查是否已被标记为物理删除
+    // 是否已被标记为物理删除
     if (level_state.deleted_files.count(file_number) > 0) {
       return nullptr;
     }
-    // 3. 最后从 Base Version 中查找
+    // Base Version
     return base_vstorage_->GetFileMetaDataByNumber(file_number);
   }
   

@@ -230,6 +230,8 @@ bool MemTable::ShouldFlushNow() {
   if (auto lh = dynamic_cast<LevelHashMemTable*>(table_.get())) {
       if (lh->NeedFlush()) {
           return true;
+      } else {
+        return false;
       }
   }
 

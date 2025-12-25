@@ -7,22 +7,12 @@
 #include <algorithm>
 #include <cstring>
 #include <random>
-
-// ==========================================
-// 1. 引入 XXHash (Header-Only 模式)
-// ==========================================
 #define XXH_INLINE_ALL 
 #include "util/xxhash.h"
 
-// ==========================================
-// 2. 引入 RocksDB 原生 MurmurHash
-// ==========================================
 #include "util/murmurhash.h"
 #include "rocksdb/slice.h" 
 
-// ==========================================
-// 3. Level-Hash 辅助函数
-// ==========================================
 inline uint64_t ReverseBits64(uint64_t x) {
     x = ((x & 0x5555555555555555ULL) << 1) | ((x & 0xAAAAAAAAAAAAAAAAULL) >> 1);
     x = ((x & 0x3333333333333333ULL) << 2) | ((x & 0xCCCCCCCCCCCCCCCCULL) >> 2);
@@ -32,7 +22,7 @@ inline uint64_t ReverseBits64(uint64_t x) {
     return (x << 32) | (x >> 32);
 }
 
-// 模拟你的 GetBucketIndex 逻辑 (使用 rocksdb 原生 MurmurHash)
+// GetBucketIndex 逻辑 (使用 rocksdb 原生 MurmurHash)
 uint32_t GetBucketIndex_Murmur(const std::string& key, uint32_t G) {
     uint64_t h = MurmurHash64A(key.data(), static_cast<int>(key.size()), 0);
     return static_cast<uint32_t>(ReverseBits64(h) >> (64 - G));
@@ -44,12 +34,7 @@ uint32_t GetBucketIndex_XXH3(const std::string& key, uint32_t G) {
     return static_cast<uint32_t>(ReverseBits64(h) >> (64 - G));
 }
 
-// ==========================================
-// 4. 测试逻辑
-// ==========================================
-
 // 模拟 Index 表 Key 的前缀结构: dbid(4B) + tableid(4B)
-// 这对于 Hash 来说是某种程度的挑战，因为前缀是完全相同的
 const uint32_t kTestDbId = 1001;
 const uint32_t kTestTableId = 50000;
 
@@ -73,12 +58,10 @@ void BenchSpeed(const std::string& name, int key_len, size_t count, HashFunc fun
             memcpy(&k[4], &kTestTableId, sizeof(uint32_t));
             
             // 3. 填入 PK (8+ 字节)
-            // 如果剩余空间够存 i，则存入 i 作为 PK 的一部分
             if (key_len >= 12) {
                  *(int*)(&k[8]) = i; 
             }
         } else {
-             // Key 太短，仅存 ID
              if (key_len >= 4) *(int*)k.data() = i; 
         }
         
@@ -106,7 +89,6 @@ void BenchSpeed(const std::string& name, int key_len, size_t count, HashFunc fun
               << " | " << mbs << " MB/s" << std::endl;
 }
 
-// 包装器，适配函数签名
 uint64_t WrapXXH3(const void* k, int l, unsigned int s) { 
     return XXH3_64bits_withSeed(k, l, (uint64_t)s); 
 }
@@ -118,8 +100,6 @@ void BenchDistribution(const std::string& name, uint32_t G, size_t count,
     std::vector<int> buckets(num_buckets, 0);
 
     // 构造 Index 表 Key: [DBID][TableID][PK_String]
-    // 这种模式下，所有 key 都有 8 字节的相同前缀。
-    // 某些 Hash 算法如果对前缀处理不好，可能会导致分布不均。
     for (size_t i = 0; i < count; ++i) {
         // 构造 PK 部分 (字符串形式)
         char pk_buf[32];
@@ -174,22 +154,17 @@ void BenchDistribution(const std::string& name, uint32_t G, size_t count,
 int main() {
     std::cout << "=== Level-Hash Benchmark Tool (Index Table Key Format) ===\n\n";
 
-    // 1. 性能测试
-    // 注意：Index Key 通常比较短（例如 8字节头 + 8字节PK = 16字节，或者更长一点）
     BenchSpeed("MurmurHash64A", 16, 10000000, MurmurHash64A);
     BenchSpeed("XXH3_64bits",   16, 10000000, WrapXXH3);
     std::cout << "------------------------------------------------\n";
     BenchSpeed("MurmurHash64A", 64, 5000000, MurmurHash64A);
     BenchSpeed("XXH3_64bits",   64, 5000000, WrapXXH3);
     std::cout << "------------------------------------------------\n";
-    // 模拟长 PK (例如复合主键 string)
     BenchSpeed("MurmurHash64A", 128, 2000000, MurmurHash64A);
     BenchSpeed("XXH3_64bits",   128, 2000000, WrapXXH3);
 
-    // 2. 分布测试
-    // 这里会使用 dbid_tableid_pk 格式进行严格测试
-    BenchDistribution("MurmurHash64A", 10, 1000000, GetBucketIndex_Murmur);
-    BenchDistribution("XXH3_64bits",   10, 1000000, GetBucketIndex_XXH3);
+    BenchDistribution("MurmurHash64A", 3, 10000000, GetBucketIndex_Murmur);
+    BenchDistribution("XXH3_64bits",   3, 10000000, GetBucketIndex_XXH3);
 
     return 0;
 }

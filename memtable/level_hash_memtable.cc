@@ -13,12 +13,13 @@ namespace ROCKSDB_NAMESPACE {
 
 LevelHashMemTable::LevelHashMemTable(
     const MemTableRep::KeyComparator& comparator, Allocator* allocator,
-    uint32_t G, size_t bucket_entry_threshold, size_t total_memory_threshold)
+    uint32_t G, size_t bucket_entry_threshold, size_t total_memory_threshold, size_t bucket_memory_limit)
     : MemTableRep(allocator),
       G_(G),
       num_buckets_(1 << G),
       bucket_entry_threshold_(bucket_entry_threshold),
       total_memory_threshold_(total_memory_threshold),
+      bucket_memory_threshold_(bucket_memory_limit),
       current_memory_usage_(0),
       flush_requested_(false), 
       allocator_(allocator),
@@ -84,19 +85,17 @@ void LevelHashMemTable::Insert(KeyHandle handle) {
   uint32_t bucket_idx = GetBucketIndex(hash, G_);
 
   std::string user_key_str = user_key.ToString();
-  if (user_key_str == "key_1500") {
-    int col = 1;
-  }
 
   // 加锁写入（暂定）
   Bucket* bucket = buckets_[bucket_idx].get();
   {
     std::unique_lock<std::shared_mutex> lock(bucket->mutex_);
     bucket->entries_.push_back(handle);
+    bucket->memory_usage_.fetch_add(entry_size + sizeof(KeyHandle), std::memory_order_relaxed);
 
     // 检查单 Bucket 阈值，触发 Flush
-    if (bucket->entries_.size() >= bucket_entry_threshold_) {
-        flush_requested_.store(true, std::memory_order_relaxed);
+    if (bucket->memory_usage_.load(std::memory_order_relaxed) >= bucket_memory_threshold_) {
+      flush_requested_.store(true, std::memory_order_relaxed);
     }
   }
   
@@ -177,6 +176,7 @@ size_t LevelHashMemTable::ApproximateMemoryUsage() {
   return current_memory_usage_.load(std::memory_order_relaxed);
 }
 
+// Iterator 暂不使用
 MemTableRep::Iterator* LevelHashMemTable::GetIterator(Arena* arena) {
   // 通常由 FlushJob 在 MemTable 变为 Immutable 后调用，
   // 此时不再有写入，因此不需要加锁。但如果在并发写入时迭代，该实现不安全

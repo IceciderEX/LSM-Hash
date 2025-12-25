@@ -19,12 +19,14 @@ class LevelHashMemTable : public MemTableRep {
   struct Bucket {
     mutable std::shared_mutex mutex_;
     std::vector<KeyHandle> entries_;
+    std::atomic<size_t> memory_usage_{0};
   };
 
   explicit LevelHashMemTable(const MemTableRep::KeyComparator& comparator,
                              Allocator* allocator, uint32_t G,
                              size_t bucket_entries_threshold, // (2) Bucket threshold
-                             size_t memory_usage_threshold);  // (3) Total memory threshold
+                             size_t memory_usage_threshold, // (3) Total memory threshold
+                             size_t bucket_memory_limit);  
 
   ~LevelHashMemTable() override;
 
@@ -56,9 +58,10 @@ class LevelHashMemTable : public MemTableRep {
   const uint32_t G_;
   const uint32_t num_buckets_;
 
-    // Thresholds
+  // Thresholds
   const size_t bucket_entry_threshold_;
   const size_t total_memory_threshold_;
+  const size_t bucket_memory_threshold_;
 
   std::vector<std::unique_ptr<Bucket>> buckets_;
 
@@ -75,26 +78,38 @@ class LevelHashMemTable : public MemTableRep {
 class LevelHashMemTableFactory : public MemTableRepFactory {
  public:
   explicit LevelHashMemTableFactory(uint32_t initial_g = 3,
-                                    size_t bucket_entries_threshold = 10,
-                                    size_t memory_usage_threshold = 100000)
+                                    size_t bucket_entries_threshold = 1000,
+                                    size_t bucket_memory_threshold = 32 * 1024 * 1024,
+                                    size_t memory_usage_threshold = 256 * 1024 * 1024)
       : initial_g_(initial_g),
         bucket_entries_threshold_(bucket_entries_threshold),
+        bucket_memory_threshold_(bucket_memory_threshold),
         memory_usage_threshold_(memory_usage_threshold) {}
   
   MemTableRep* CreateMemTableRep(const MemTableRep::KeyComparator& comparator,
                                  Allocator* allocator,
                                  const SliceTransform* /*prefix_extractor*/,
                                  Logger* /*logger*/, uint32_t /* column_family_id*/) override {
+    size_t bucket_memory_limit = bucket_memory_threshold_;
+    if (bucket_memory_threshold_ == 0) {
+      uint32_t num_buckets = 1 << initial_g_;
+      bucket_memory_limit = memory_usage_threshold_ / num_buckets;
+    }
     return new LevelHashMemTable(comparator, allocator, initial_g_,
-                                 bucket_entries_threshold_, memory_usage_threshold_);
+                                 bucket_entries_threshold_, memory_usage_threshold_, bucket_memory_limit);
   }
 
   MemTableRep* CreateMemTableRep(const MemTableRep::KeyComparator& comparator,
                                  Allocator* allocator,
                                  const SliceTransform* /*prefix_extractor*/,
                                  Logger* /*logger*/) override {
+    size_t bucket_memory_limit = bucket_memory_threshold_;
+    if (bucket_memory_threshold_ == 0) {
+      uint32_t num_buckets = 1 << initial_g_;
+      bucket_memory_limit = memory_usage_threshold_ / num_buckets;
+    }
     return new LevelHashMemTable(comparator, allocator, initial_g_,
-                                 bucket_entries_threshold_, memory_usage_threshold_);
+                                 bucket_entries_threshold_, memory_usage_threshold_, bucket_memory_limit);
   }
 
   const char* Name() const override { return "LevelHashMemTableFactory"; }
@@ -105,8 +120,9 @@ class LevelHashMemTableFactory : public MemTableRepFactory {
 
  private:
   const uint32_t initial_g_;
-  const size_t bucket_entries_threshold_;
-  const size_t memory_usage_threshold_;
+  const size_t bucket_entries_threshold_; // (1) Bucket entry threshold
+  const size_t bucket_memory_threshold_; // (2) Bucket memory threshold
+  const size_t memory_usage_threshold_; // (3) Total memory threshold
 };
 
 }  // namespace ROCKSDB_NAMESPACE

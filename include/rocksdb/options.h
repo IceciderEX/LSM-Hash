@@ -404,6 +404,9 @@ struct ColumnFamilyOptions : public AdvancedColumnFamilyOptions {
   // Once validated in production, the default will likely change to something
   // around 300.
   uint32_t uncache_aggressiveness = 0;
+  
+  // for levelhash
+  int level_hash_initial_g = 3;
 
   // Create ColumnFamilyOptions with default values for all fields
   ColumnFamilyOptions();

@@ -325,7 +325,9 @@ void VersionEdit::EncodeToNewFile4(const FileMetaData& f, int level,
   }
   if (f.level_hash_g > 0) {
     PutVarint32(dst, NewFileCustomTag::kLevelHashG);
-    PutVarint64(dst, f.level_hash_g);
+    std::string varint_g;
+    PutVarint64(&varint_g, f.level_hash_g);
+    PutLengthPrefixedSlice(dst, Slice(varint_g));
   }
 
   TEST_SYNC_POINT_CALLBACK("VersionEdit::EncodeTo:NewFile4:CustomizeFields",

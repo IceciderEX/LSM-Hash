@@ -330,7 +330,7 @@ class LevelHashTableReader : public TableReader {
 // Factory
 class LevelHashTableFactory : public TableFactory {
  public:
-  explicit LevelHashTableFactory(uint32_t initial_g = 3) : initial_g_(initial_g) {}
+  explicit LevelHashTableFactory(uint32_t initial_g) : initial_g_(initial_g) {}
 
   const char* Name() const override { return "LevelHashTableFactory"; }
 

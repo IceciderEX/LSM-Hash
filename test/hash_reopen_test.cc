@@ -23,7 +23,7 @@ using namespace ROCKSDB_NAMESPACE;
 
 // --- 测试配置 ---
 const int kNumRounds = 5;            // 重启 5 轮
-const int kOpsPerRound = 10000;      // 每轮写入/删除操作数
+const int kOpsPerRound = 50000;      // 每轮写入/删除操作数
 const int kNumKeys = 5000;           // Key 范围
 std::string kDBPath = "/home/wam/HWKV/rocksdb/db_tmp/rocksdb_levelhash_reopen_test";
 
@@ -95,7 +95,7 @@ Options GetOptions() {
     
     // 激进 Flush/Compact
     options.write_buffer_size = 64 * 1024; // 64KB MemTable 
-    options.level0_file_num_compaction_trigger = 2; 
+    options.level0_file_num_compaction_trigger = 4; 
     options.target_file_size_base = 64 * 1024;
     options.max_background_jobs = 4;
     
@@ -104,7 +104,7 @@ Options GetOptions() {
 
 int main() {
     // 1. 清理环境 (可选，如果想接着之前的跑可以注释掉 DestroyDB)
-    // DestroyDB(kDBPath, GetOptions());
+    DestroyDB(kDBPath, GetOptions());
     
     // 随机数生成
     std::mt19937 rng(std::random_device{}());
@@ -154,10 +154,12 @@ int main() {
         std::this_thread::sleep_for(std::chrono::seconds(5));
 
         // 打印文件层级
-        std::string num_l0, num_l1;
+        std::string num_l0, num_l1, num_l2, num_l3;
         db->GetProperty("rocksdb.num-files-at-level0", &num_l0);
         db->GetProperty("rocksdb.num-files-at-level1", &num_l1);
-        std::cout << "[Round " << round << "] Stats - L0: " << num_l0 << ", L1: " << num_l1 << std::endl;
+        db->GetProperty("rocksdb.num-files-at-level2", &num_l2);
+        db->GetProperty("rocksdb.num-files-at-level3", &num_l3);
+        std::cout << "[Round " << round << "] Stats - L0: " << num_l0 << ", L1: " << num_l1 << ", L2: " << num_l2 << ", L3: " << num_l3 << std::endl;
 
         // 5. 关闭 DB (模拟 Crash/Restart)
         std::cout << "[Round " << round << "] Closing DB..." << std::endl;

@@ -93,6 +93,10 @@
 #include "utilities/merge_operators/bytesxor.h"
 #include "utilities/merge_operators/sortlist.h"
 #include "utilities/persistent_cache/block_cache_tier.h"
+
+#include "memtable/level_hash_memtable.h"
+#include "table/level_hash/level_hash_table.h"
+
 #ifdef MEMKIND
 #include "memory/memkind_kmem_allocator.h"
 #endif
@@ -1896,6 +1900,17 @@ DEFINE_uint32(openandcompact_cancel_after_millseconds, 1,
               "Time to wait before cancelling compaction in odd runs when "
               "openandcompact_test_cancel_on_odd is true");
 
+// for levelhash
+DEFINE_bool(use_level_hash, false, "if use levelhash table format");
+
+DEFINE_int32(level_hash_g, 3, "The initial G value (number of buckets = 2^G) for LevelHash");
+
+DEFINE_uint64(level_hash_bucket_entries_limit, 100, "Max capacity per bucket for LevelHash MemTable");
+
+DEFINE_uint64(level_hash_memtable_limit, 1024 * 1024 * 32 * 8, "Max memtable capacity");
+
+DEFINE_uint64(level_hash_bucket_memory_limit, 32 * 1024 * 1024, "Max memory per bucket for LevelHash MemTable");
+
 namespace ROCKSDB_NAMESPACE {
 namespace {
 static Status CreateMemTableRepFactory(
@@ -1911,6 +1926,13 @@ static Status CreateMemTableRepFactory(
     factory->reset(new VectorRepFactory());
   } else if (!strcasecmp(FLAGS_memtablerep.c_str(), "hash_linkedlist")) {
     factory->reset(NewHashLinkListRepFactory(FLAGS_hash_bucket_count));
+  } else if (!strcasecmp(FLAGS_memtablerep.c_str(), "level_hash")) {
+    factory->reset(new LevelHashMemTableFactory( // for levelhash
+        FLAGS_level_hash_g, 
+        FLAGS_level_hash_bucket_entries_limit,
+        FLAGS_level_hash_bucket_memory_limit,
+        FLAGS_level_hash_memtable_limit
+    ));
   } else {
     std::unique_ptr<MemTableRepFactory> unique;
     s = MemTableRepFactory::CreateFromString(config_options, FLAGS_memtablerep,
@@ -4485,6 +4507,11 @@ class Benchmark {
       table_options.identity_as_first_hash = FLAGS_identity_as_first_hash;
       options.table_factory =
           std::shared_ptr<TableFactory>(NewCuckooTableFactory(table_options));
+    } else if(FLAGS_use_level_hash) { // for levelhash
+      options.table_factory =
+          std::shared_ptr<TableFactory>(new LevelHashTableFactory(FLAGS_level_hash_g));
+      options.compaction_style = kCompactionStyleLevelHash;
+      options.level_hash_initial_g = FLAGS_level_hash_g;
     } else {
       BlockBasedTableOptions block_based_options;
       block_based_options.checksum =

@@ -49,7 +49,7 @@ Compaction* LevelHashCompactionPicker::PickCompaction(
     LogBuffer* log_buffer, bool /*require_max_output_level*/) {
   
   // TODO: 从配置中（某个 option）获取 Initial G
-  const uint32_t kInitialG = 3;  // hard code
+  const uint32_t kInitialG = mutable_cf_options.level_hash_initial_g;  // hard code
   // 目前策略：优先处理上层 (L0 > L1 > ...)
   for (int level = 0; level < vstorage->num_levels() - 1; ++level) {
       int input_level = level;

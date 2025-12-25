@@ -1373,7 +1373,6 @@ Status CompactionJob::ProcessLevelHashData(
       //         compact_->compaction->output_level());
 
       builder->Add(it->internal_key, it->value);
-      // 同时更新边界 (Smallest/Largest/Seq) 逻辑
       ParsedInternalKey parsed_key;
       ParseInternalKey(it->internal_key, &parsed_key, false); 
       
